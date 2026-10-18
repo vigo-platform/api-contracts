@@ -1,0 +1,897 @@
+openapi: 3.0.3
+info:
+  title: Auth Service API Contract
+  description: Authentication, multi-step registration, 2FA, password recovery, and session management with Refresh Token Rotation.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:7070
+    description: Local Development
+
+tags:
+  - name: Login
+  - name: Signup
+  - name: Session
+  - name: Password Reset
+
+paths:
+  # ==========================================
+  #                   LOGIN
+  # ==========================================
+  /api/auth/login-password:
+    post:
+      tags: [Login]
+      summary: Authenticate with identifier and password
+      operationId: loginWithPassword
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - $ref: '#/components/parameters/XForwardedForHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginPasswordRequest'
+      responses:
+        '200':
+          description: Authenticated or 2FA required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              examples:
+                directLoginSuccess:
+                  summary: Direct login (2FA disabled)
+                  value:
+                    success: true
+                    code: AUTH_SUCCESS
+                    message: Logged in successfully.
+                    message_fa: ورود با موفقیت انجام شد.
+                    data:
+                      step: SUCCESS
+                      access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+                      refresh_token: 33157d94-c353-48fa-82f3-76ef06ad15bb
+                      mfa_token: null
+                    timestamp: '2026-10-18T18:30:00Z'
+                mfaRequired:
+                  summary: 2FA required
+                  value:
+                    success: true
+                    code: MFA_REQUIRED
+                    message: Two-factor authentication code sent to your email.
+                    message_fa: کد تایید دو مرحله‌ای به ایمیل شما ارسال شد.
+                    data:
+                      step: 2FA-EMAIL
+                      access_token: null
+                      refresh_token: null
+                      mfa_token: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                    timestamp: '2026-10-18T18:30:00Z'
+
+                    
+        
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidCredentialsError'
+        '403':
+          $ref: '#/components/responses/AccountForbiddenError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/login-otp-email:
+    post:
+      tags: [Login]
+      summary: Request OTP login via email
+      operationId: loginWithOtpEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: OTP sent (or silent drop executed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                success: true
+                code: OTP_SENT
+                message: If the email is registered, a verification code has been sent.
+                message_fa: در صورت ثبت بودن ایمیل، کد تایید برای شما ارسال شد.
+                data:
+                  step: 2FA-EMAIL
+                  access_token: null
+                  refresh_token: null
+                  mfa_token: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                timestamp: '2026-10-18T18:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/login-otp-phone:
+    post:
+      tags: [Login]
+      summary: Request OTP login via SMS
+      operationId: loginWithOtpPhone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PhoneRequest'
+      responses:
+        '200':
+          description: OTP sent via SMS
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                success: true
+                code: OTP_SENT
+                message: If the phone number is registered, an SMS verification code has been sent.
+                message_fa: در صورت ثبت بودن شماره همراه، پیامک کد تایید ارسال شد.
+                data:
+                  step: 2FA-PHONE
+                  access_token: null
+                  refresh_token: null
+                  mfa_token: PHoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7111
+                timestamp: '2026-10-18T18:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/verify:
+    post:
+      tags: [Login]
+      summary: Verify login OTP or 2FA code
+      operationId: verifyLoginOtp
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - $ref: '#/components/parameters/XForwardedForHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: Verification successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                success: true
+                code: AUTH_SUCCESS
+                message: Verification successful. You are now logged in.
+                message_fa: کد تایید شد و ورود با موفقیت انجام گرفت.
+                data:
+                  step: SUCCESS
+                  access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+                  refresh_token: 33157d94-c353-48fa-82f3-76ef06ad15bb
+                  mfa_token: null
+                timestamp: '2026-10-18T18:31:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidOtpError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ==========================================
+  #                   SIGNUP
+  # ==========================================
+  /api/auth/signup/initiate:
+    post:
+      tags: [Signup]
+      summary: Step 1 - Initiate signup and send email OTP
+      operationId: signupInitiate
+      parameters:
+        - $ref: '#/components/parameters/XForwardedForHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: Verification OTP sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaTokenResponse'
+              example:
+                success: true
+                code: SIGNUP_OTP_SENT
+                message: Verification code sent to your email. Please check your inbox or spam folder.
+                message_fa: کد تایید به ایمیل شما ارسال شد. لطفاً صندوق ورودی یا پوشه اسپم را بررسی کنید.
+                data:
+                  mfa_token: ZW7pnSWKmTDOUpaABYKBmkOpIm_7xjQfGj9KwV6Pl0M
+                timestamp: '2026-10-18T18:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/EmailConflictError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/signup/verify:
+    post:
+      tags: [Signup]
+      summary: Step 2 - Verify signup email OTP
+      operationId: signupVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: Email verified, temporary token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TempTokenResponse'
+              example:
+                success: true
+                code: EMAIL_VERIFIED
+                message: Your email has been verified. You have 15 minutes to complete your registration.
+                message_fa: ایمیل شما با موفقیت تایید شد. ۱۵ دقیقه فرصت دارید تا ثبت‌نام را تکمیل کنید.
+                data:
+                  temp_token: f2fcf1ac4827483ab1d5cda8a3780b75
+                timestamp: '2026-10-18T18:32:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidOtpError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/signup/complete:
+    post:
+      tags: [Signup]
+      summary: Step 3 - Complete profile and create user
+      operationId: signupComplete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupCompleteRequest'
+      responses:
+        '201':
+          description: Account created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResponse'
+              example:
+                success: true
+                code: USER_REGISTERED
+                message: Registration completed successfully. Please sign in to continue.
+                message_fa: ثبت‌نام با موفقیت تکمیل شد. برای ادامه وارد حساب کاربری خود شوید.
+                data: null
+                timestamp: '2026-10-18T18:35:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidTempTokenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ==========================================
+  #                  SESSION
+  # ==========================================
+  /api/auth/refresh:
+    post:
+      tags: [Session]
+      summary: Rotate refresh token and issue new access token
+      operationId: refreshToken
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/DeviceIdHeader'
+        - $ref: '#/components/parameters/XForwardedForHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Tokens rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairResponse'
+              example:
+                success: true
+                code: TOKEN_ROTATED
+                message: Session tokens refreshed successfully.
+                message_fa: توکن‌های نشست با موفقیت تمدید شدند.
+                data:
+                  access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.newSignatureHere
+                  refresh_token: 8e5fd397-bb4f-4eb2-b7e6-70e6c382f704
+                timestamp: '2026-10-18T18:45:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidRefreshTokenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/logout:
+    post:
+      tags: [Session]
+      summary: Revoke refresh token and terminate session
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResponse'
+              example:
+                success: true
+                code: LOGOUT_SUCCESS
+                message: You have been logged out successfully.
+                message_fa: با موفقیت از حساب کاربری خود خارج شدید.
+                data: null
+                timestamp: '2026-10-18T18:50:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ==========================================
+  #               PASSWORD RESET
+  # ==========================================
+  /api/auth/reset-password/initiate:
+    post:
+      tags: [Password Reset]
+      summary: Step 1 - Request password reset OTP
+      operationId: resetPasswordInitiate
+      parameters:
+        - $ref: '#/components/parameters/XForwardedForHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: Reset OTP sent (or silent drop executed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MfaTokenResponse'
+              example:
+                success: true
+                code: RESET_OTP_SENT
+                message: If the email is registered, a password reset code has been sent.
+                message_fa: در صورت وجود حساب کاربری، کد بازیابی رمز عبور به ایمیل شما ارسال شد.
+                data:
+                  mfa_token: XYoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                timestamp: '2026-10-18T18:30:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/AccountLockedError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/reset-password/verify:
+    post:
+      tags: [Password Reset]
+      summary: Step 2 - Verify password reset OTP
+      operationId: resetPasswordVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: OTP verified, temporary token issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TempTokenResponse'
+              example:
+                success: true
+                code: RESET_OTP_VERIFIED
+                message: Verification successful. You can now set your new password.
+                message_fa: کد تایید شد. اکنون می‌توانید رمز عبور جدید خود را تعیین کنید.
+                data:
+                  temp_token: 200a9aa361a746e8ab86d3e59349f410
+                timestamp: '2026-10-18T18:32:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidOtpError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/reset-password/complete:
+    post:
+      tags: [Password Reset]
+      summary: Step 3 - Set new password and revoke all active sessions
+      operationId: resetPasswordComplete
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordCompleteRequest'
+      responses:
+        '200':
+          description: Password updated and sessions revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResponse'
+              example:
+                success: true
+                code: PASSWORD_UPDATED
+                message: Your password has been updated and all active sessions have been terminated.
+                message_fa: رمز عبور شما تغییر یافت و تمامی نشست‌های فعال در سایر دستگاه‌ها بسته شد.
+                data: null
+                timestamp: '2026-10-18T18:35:00Z'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/InvalidTempTokenError'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+# ==========================================
+#                 COMPONENTS
+# ==========================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    UserAgentHeader:
+      name: User-Agent
+      in: header
+      required: false
+      schema:
+        type: string
+    DeviceIdHeader:
+      name: X-Device-Id
+      in: header
+      required: false
+      schema:
+        type: string
+    XForwardedForHeader:
+      name: X-Forwarded-For
+      in: header
+      required: false
+      schema:
+        type: string
+
+  # ------------------------------------
+  #       Standard Error Responses
+  # ------------------------------------
+  responses:
+    ValidationError:
+      description: Request input validation failed (HTTP 400)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+          example:
+            success: false
+            code: VALIDATION_FAILED
+            message: Input validation failed. Please check the provided fields.
+            message_fa: اعتبارسنجی ورودی‌ها ناموفق بود. لطفاً مقادیر وارد شده را بررسی کنید.
+            data:
+              - field: password
+                code: INVALID_PASSWORD_FORMAT
+                message: Password must be 8-32 characters and include uppercase, lowercase, and numbers.
+                message_fa: رمز عبور باید بین ۸ تا ۳۲ کاراکتر و شامل حروف کوچک، بزرگ و عدد باشد.
+              - field: email
+                code: INVALID_EMAIL
+                message: Must be a well-formed email address.
+                message_fa: فرمت آدرس ایمیل وارد شده معتبر نیست.
+            timestamp: '2026-10-18T18:30:00Z'
+
+    InvalidCredentialsError:
+      description: Invalid username or password (HTTP 401)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: INVALID_CREDENTIALS
+            message: Invalid identifier or password. Please check your entries and try again.
+            message_fa: نام کاربری یا رمز عبور اشتباه است. ورودی‌های خود را بررسی و مجدداً تلاش کنید.
+            data: null
+            timestamp: '2026-10-18T18:30:00Z'
+
+    InvalidOtpError:
+      description: Invalid or expired OTP / MFA token (HTTP 401)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: INVALID_OR_EXPIRED_OTP
+            message: The verification code is incorrect or has expired.
+            message_fa: کد تایید وارد شده اشتباه است یا منقضی شده است.
+            data: null
+            timestamp: '2026-10-18T18:32:00Z'
+
+    InvalidTempTokenError:
+      description: Expired or invalid temporary token (HTTP 401)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: TEMP_TOKEN_EXPIRED
+            message: Your registration session has expired. Please start the verification process again.
+            message_fa: زمان مجاز این مرحله به پایان رسیده است. لطفاً فرآیند تایید را مجدداً آغاز کنید.
+            data: null
+            timestamp: '2026-10-18T18:50:00Z'
+
+    InvalidRefreshTokenError:
+      description: Expired, revoked, or reused refresh token (HTTP 401)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: INVALID_REFRESH_TOKEN
+            message: Session expired or invalid refresh token. Please sign in again.
+            message_fa: نشست شما منقضی شده یا توکن نامعتبر است. لطفاً مجدداً وارد شوید.
+            data: null
+            timestamp: '2026-10-18T18:45:00Z'
+
+    AccountForbiddenError:
+      description: Account suspended or password expired (HTTP 403)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: ACCOUNT_SUSPENDED
+            message: Your account has been suspended. Please contact support.
+            message_fa: حساب کاربری شما مسدود شده است. لطفاً با پشتیبانی تماس بگیرید.
+            data: null
+            timestamp: '2026-10-18T18:30:00Z'
+
+    EmailConflictError:
+      description: Email already registered (HTTP 409)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: EMAIL_ALREADY_EXISTS
+            message: An account with this email address already exists.
+            message_fa: این آدرس ایمیل قبلاً در سامانه ثبت شده است.
+            data: null
+            timestamp: '2026-10-18T18:30:00Z'
+
+    AccountLockedError:
+      description: Rate limit exceeded or account temporarily locked (HTTP 429)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LockErrorResponse'
+          example:
+            success: false
+            code: ACCOUNT_TEMP_LOCKED
+            message: Too many failed attempts. Your account is locked for 15 minutes.
+            message_fa: به دلیل تلاش‌های ناموفق بیش از حد، حساب شما به مدت ۱۵ دقیقه قفل شد.
+            data:
+              retry_after_seconds: 899
+              locked_until: '2026-10-18T18:45:00Z'
+            timestamp: '2026-10-18T18:30:01Z'
+
+    InternalServerError:
+      description: Unexpected internal server error (HTTP 500)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EmptyResponse'
+          example:
+            success: false
+            code: INTERNAL_SERVER_ERROR
+            message: An unexpected error occurred on the server. Please try again later.
+            message_fa: خطای غیرمنتظره‌ای در سرور رخ داده است. لطفاً دقایقی دیگر مجدداً تلاش کنید.
+            data: null
+            timestamp: '2026-10-18T18:30:00Z'
+
+  # ------------------------------------
+  #               Schemas
+  # ------------------------------------
+  schemas:
+    LoginPasswordRequest:
+      type: object
+      required: [identifier, password]
+      properties:
+        identifier:
+          type: string
+          minLength: 3
+          maxLength: 255
+          example: user@example.com
+        password:
+          type: string
+          minLength: 8
+          maxLength: 32
+          example: StrongPass123!
+
+    EmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 3
+          maxLength: 255
+          example: user@example.com
+
+    PhoneRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          pattern: '^(?:\+98|0098|0)?9\d{9}$'
+          example: '09123456789'
+
+    VerifyOtpRequest:
+      type: object
+      required: [mfa_token, otp]
+      properties:
+        mfa_token:
+          type: string
+          maxLength: 255
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+        otp:
+          type: string
+          minLength: 5
+          maxLength: 6
+          example: '89764'
+
+    SignupCompleteRequest:
+      type: object
+      required: [temp_token, first_name, last_name, password]
+      properties:
+        temp_token:
+          type: string
+          example: f2fcf1ac4827483ab1d5cda8a3780b75
+        first_name:
+          type: string
+          minLength: 2
+          maxLength: 50
+          pattern: '^[\p{L}\s]+$'
+          example: Taha
+        last_name:
+          type: string
+          minLength: 2
+          maxLength: 50
+          pattern: '^[\p{L}\s]+$'
+          example: Amini
+        password:
+          $ref: '#/components/schemas/StrongPassword'
+
+    ResetPasswordCompleteRequest:
+      type: object
+      required: [temp_token, password]
+      properties:
+        temp_token:
+          type: string
+          example: 200a9aa361a746e8ab86d3e59349f410
+        password:
+          $ref: '#/components/schemas/StrongPassword'
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          format: uuid
+          minLength: 36
+          maxLength: 36
+          example: ece46799-1587-44ec-b089-22a8e2f77909
+
+    StrongPassword:
+      type: string
+      minLength: 8
+      maxLength: 32
+      pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};'':",./<>?]+$'
+      example: StrongPass123!
+
+    # ------------------------------------
+    #             Data Payloads
+    # ------------------------------------
+    LoginData:
+      type: object
+      required: [step]
+      properties:
+        step:
+          type: string
+          enum: [SUCCESS, 2FA-EMAIL, 2FA-PHONE]
+        access_token:
+          type: string
+          nullable: true
+        refresh_token:
+          type: string
+          format: uuid
+          nullable: true
+        mfa_token:
+          type: string
+          nullable: true
+
+    MfaTokenData:
+      type: object
+      required: [mfa_token]
+      properties:
+        mfa_token:
+          type: string
+
+    TempTokenData:
+      type: object
+      required: [temp_token]
+      properties:
+        temp_token:
+          type: string
+
+    TokenPairData:
+      type: object
+      required: [access_token, refresh_token]
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+          format: uuid
+
+    LockDurationData:
+      type: object
+      required: [retry_after_seconds, locked_until]
+      properties:
+        retry_after_seconds:
+          type: integer
+          description: Remaining lock duration in seconds
+        locked_until:
+          type: string
+          format: date-time
+          description: Exact UTC timestamp when the lock expires
+
+    ValidationErrorItem:
+      type: object
+      required: [field, code, message, message_fa]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+        message_fa:
+          type: string
+
+    # ------------------------------------
+    #          Response Envelopes
+    # ------------------------------------
+    BaseResponse:
+      type: object
+      required: [success, code, message, message_fa, timestamp]
+      properties:
+        success:
+          type: boolean
+        code:
+          type: string
+          description: Machine-readable status or error code
+        message:
+          type: string
+        message_fa:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    EmptyResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              nullable: true
+
+    LoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LoginData'
+
+    MfaTokenResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MfaTokenData'
+
+    TempTokenResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TempTokenData'
+
+    TokenPairResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TokenPairData'
+
+    LockErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/LockDurationData'
+
+    ValidationErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/ValidationErrorItem'
