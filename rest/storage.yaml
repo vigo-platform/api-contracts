@@ -1,0 +1,534 @@
+openapi: 3.0.3
+info:
+  title: Vigo – Storage Service
+  version: 1.1.0
+  description: |
+    Program files (workout / diet / supplement) uploaded by a coach for a specific athlete, with versioning,
+    and public images (avatars, coach result photos) used by the User service.
+
+    ## Identity
+    The API Gateway validates the access token (RS256) and injects `X-User-Id` (uuid, the JWT `sub`) and
+    `X-User-Role` (`ATHLETE | COACH | ADMIN`, the JWT `role` claim). This service never parses JWTs.
+    Clients must never send these headers themselves (the Gateway overwrites them).
+
+    ## Who can do what
+    | Operation | ATHLETE | COACH | ADMIN |
+    |---|---|---|---|
+    | Upload file / new version | – | owner, and only while the coach–athlete relation is ACTIVE | – |
+    | List files | own files (files addressed to me) | files I uploaded | all |
+    | View metadata / download | files addressed to me (also after the relation expired) | files I uploaded | all |
+    | Edit metadata / delete | – | files I uploaded | all |
+    | Upload image (media) | yes | yes | yes |
+
+    A coach must also be `APPROVED` (the Gateway only lets `role = COACH` through, which is set on approval).
+    Users who are not allowed to see a file get `403`; a file that does not exist or was deleted gets `404`.
+
+    ## Active relation check
+    The Storage service keeps its own copy of subscriptions, built from the `subscription.events` topic
+    (`SubscriptionActivated`, `SubscriptionExpired`, `SubscriptionCancelled`; published by the Order service).
+    A relation is ACTIVE when the subscription status is ACTIVE and `ends_at` is in the future.
+    No synchronous call to another service is needed. If no active relation exists the upload fails with
+    `403 NO_ACTIVE_RELATION`. See `events.md` for all event payloads.
+
+    ## File rules
+    - Maximum size: **20 MB** per file (`413 FILE_TOO_LARGE`). Images (media): **5 MB**.
+    - Allowed program file types: `pdf, png, jpg, jpeg, docx, xlsx, txt`. Allowed image types: `png, jpg, jpeg`.
+      The extension **and** the file signature must match, otherwise `415 UNSUPPORTED_MEDIA_TYPE` or `400 FILE_CONTENT_MISMATCH`.
+    - Downloads always use `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
+    - Deleting is a soft delete: the file disappears from the API, the stored bytes are kept for audit.
+    - A coach cannot upload to themselves, and the same (athlete, category, title) can exist only once
+      (`409 FILE_ALREADY_EXISTS`: use `POST /files/{file_id}/versions` to add a version).
+
+    ## Conventions
+    - All JSON field names, query parameters and path parameters are `snake_case`; enum values are `UPPER_CASE`.
+    - Every JSON response uses the standard envelope `{success, code, message, message_fa, data, timestamp}`.
+
+    ## Error codes (non-exhaustive)
+    `VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `NO_ACTIVE_RELATION`, `FILE_ALREADY_EXISTS`,
+    `FILE_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE`, `FILE_CONTENT_MISMATCH`, `INTERNAL_SERVER_ERROR`.
+servers:
+  - url: http://localhost:8080
+    description: API Gateway
+
+tags:
+  - name: Files
+  - name: Versions
+  - name: Media
+
+paths:
+  /api/v1/files:
+    post:
+      tags: [Files]
+      summary: Upload a new program file (COACH)
+      operationId: uploadFile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, athlete_id, category, title]
+              properties:
+                file: { type: string, format: binary }
+                athlete_id: { type: string, format: uuid }
+                category: { $ref: '#/components/schemas/FileCategory' }
+                title: { type: string, minLength: 2, maxLength: 100 }
+                description: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: { schema: { type: string }, example: /api/v1/files/7d1c0b1e-0000-0000-0000-000000000001 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileMetadataResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      tags: [Files]
+      summary: List files (role-dependent, see "Who can do what")
+      description: |
+        - ATHLETE: always the files addressed to the caller. `athlete_id`, if given, must equal the caller (else 403). `coach_id` can be used as a filter.
+        - COACH: always the files the caller uploaded. `coach_id`, if given, must equal the caller (else 403). `athlete_id` can be used as a filter.
+        - ADMIN: all files; all filters allowed.
+      operationId: listFiles
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: athlete_id, in: query, schema: { type: string, format: uuid } }
+        - { name: coach_id, in: query, schema: { type: string, format: uuid } }
+        - { name: category, in: query, schema: { $ref: '#/components/schemas/FileCategory' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FilePageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/files/{file_id}:
+    get:
+      tags: [Files]
+      summary: File metadata with all versions (athlete, owner coach, admin)
+      operationId: getFile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/FileId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileDetailResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      tags: [Files]
+      summary: Edit file metadata (owner coach, admin)
+      description: Send only the fields to change. Changing `title` or `category` to a combination that already exists for the same athlete gives `409 FILE_ALREADY_EXISTS`.
+      operationId: updateFileMetadata
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/FileId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                title: { type: string, minLength: 2, maxLength: 100 }
+                description: { type: string, maxLength: 500 }
+                category: { $ref: '#/components/schemas/FileCategory' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileMetadataResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Files]
+      summary: Delete file, soft delete (owner coach, admin)
+      operationId: deleteFile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/FileId' }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmptyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/files/{file_id}/versions:
+    post:
+      tags: [Versions]
+      summary: Upload a new version (owner coach, active relation required)
+      operationId: uploadVersion
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/FileId' }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                change_note: { type: string, maxLength: 300 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileVersionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/files/{file_id}/download:
+    get:
+      tags: [Files]
+      summary: Download a file binary stream (athlete, owner coach, admin)
+      description: Without `version` the latest version is returned. The `Content-Type` is derived from the stored file type.
+      operationId: downloadFile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/FileId' }
+        - { name: version, in: query, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: Binary stream
+          headers:
+            Content-Disposition: { schema: { type: string }, description: 'attachment; filename*=UTF-8''...' }
+            Content-Length: { schema: { type: integer, format: int64 } }
+            X-File-Version: { schema: { type: integer } }
+            X-Content-Type-Options: { schema: { type: string, example: nosniff } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/media/images:
+    post:
+      tags: [Media]
+      summary: Upload a public image (any authenticated role)
+      description: |
+        For avatars and coach result photos. Use the returned `url` as `avatar_url` or in `result_image_urls`
+        of the User service. Images are public: anyone with the URL can view them. Max 5 MB, png/jpg/jpeg.
+      operationId: uploadImage
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, purpose]
+              properties:
+                file: { type: string, format: binary }
+                purpose: { $ref: '#/components/schemas/MediaPurpose' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MediaResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/media/{media_id}:
+    get:
+      tags: [Media]
+      summary: View a public image (no authentication needed)
+      operationId: getImage
+      parameters:
+        - { $ref: '#/components/parameters/MediaId' }
+      responses:
+        '200':
+          description: Image bytes
+          headers:
+            Cache-Control: { schema: { type: string, example: 'public, max-age=86400' } }
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Media]
+      summary: Delete my image (uploader, admin)
+      operationId: deleteImage
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/MediaId' }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmptyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  parameters:
+    UserIdHeader:
+      name: X-User-Id
+      in: header
+      required: true
+      description: Injected by the Gateway from the JWT `sub`. Never sent by clients.
+      schema: { type: string, format: uuid }
+    UserRoleHeader:
+      name: X-User-Role
+      in: header
+      required: true
+      description: Injected by the Gateway from the JWT `role` claim. Never sent by clients.
+      schema: { $ref: '#/components/schemas/Role' }
+    FileId: { name: file_id, in: path, required: true, schema: { type: string, format: uuid } }
+    MediaId: { name: media_id, in: path, required: true, schema: { type: string, format: uuid } }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Validation failed (HTTP 400)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Authentication required (HTTP 401)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Role not allowed, not the owner, or no active relation (HTTP 403)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Resource not found or deleted (HTTP 404)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: State conflict, for example FILE_ALREADY_EXISTS (HTTP 409)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    PayloadTooLarge:
+      description: File size exceeds the limit (HTTP 413)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnsupportedMediaType:
+      description: Unsupported file type (HTTP 415)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: Unexpected internal server error (HTTP 500)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    FieldIssue:
+      type: object
+      required: [field, code, message, message_fa]
+      properties:
+        field: { type: string, example: file }
+        code: { type: string, example: FILE_TOO_LARGE }
+        message: { type: string, example: File exceeds maximum size }
+        message_fa: { type: string, example: حجم فایل بیشتر از حد مجاز است }
+
+    BaseResponse:
+      type: object
+      required: [success, code, message, message_fa, timestamp]
+      properties:
+        success: { type: boolean }
+        code: { type: string }
+        message: { type: string }
+        message_fa: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    EmptyResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { type: object, nullable: true }
+
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/FieldIssue' }
+              nullable: true
+
+    PageMeta:
+      type: object
+      required: [page, size, total_elements, total_pages]
+      properties:
+        page: { type: integer, example: 0 }
+        size: { type: integer, example: 20 }
+        total_elements: { type: integer, format: int64, example: 134 }
+        total_pages: { type: integer, example: 7 }
+
+    Role: { type: string, enum: [ATHLETE, COACH, ADMIN] }
+    FileCategory:
+      type: string
+      description: WORKOUT, DIET and SUPPLEMENT use the same words as the User service `PlanInclude`.
+      enum: [WORKOUT, DIET, SUPPLEMENT, OTHER]
+    MediaPurpose: { type: string, enum: [AVATAR, RESULT] }
+
+    FileVersion:
+      type: object
+      required: [version, size_bytes, content_type, uploaded_at]
+      properties:
+        version: { type: integer }
+        original_name: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        checksum_sha256: { type: string }
+        change_note: { type: string, nullable: true }
+        uploaded_by: { type: string, format: uuid }
+        uploaded_at: { type: string, format: date-time }
+
+    FileMetadata:
+      type: object
+      required: [file_id, coach_id, athlete_id, category, title, latest_version]
+      properties:
+        file_id: { type: string, format: uuid }
+        coach_id: { type: string, format: uuid }
+        athlete_id: { type: string, format: uuid }
+        category: { $ref: '#/components/schemas/FileCategory' }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        latest_version: { type: integer }
+        content_type: { type: string, description: Of the latest version }
+        size_bytes: { type: integer, format: int64, description: Of the latest version }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    FileDetail:
+      allOf:
+        - $ref: '#/components/schemas/FileMetadata'
+        - type: object
+          properties:
+            versions:
+              type: array
+              description: Newest first
+              items: { $ref: '#/components/schemas/FileVersion' }
+
+    FilePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content:
+              type: array
+              items: { $ref: '#/components/schemas/FileMetadata' }
+
+    Media:
+      type: object
+      required: [media_id, url, purpose, content_type, size_bytes, created_at]
+      properties:
+        media_id: { type: string, format: uuid }
+        url: { type: string, example: /api/v1/media/7d1c0b1e-0000-0000-0000-000000000002 }
+        purpose: { $ref: '#/components/schemas/MediaPurpose' }
+        content_type: { type: string, example: image/png }
+        size_bytes: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+
+    FileMetadataResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/FileMetadata' }
+
+    FileDetailResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/FileDetail' }
+
+    FileVersionResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/FileVersion' }
+
+    FilePageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/FilePage' }
+
+    MediaResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Media' }

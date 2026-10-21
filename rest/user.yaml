@@ -1,0 +1,937 @@
+openapi: 3.0.3
+info:
+  title: Vigo – User Service
+  version: 1.1.0
+  description: |
+    User profiles, coach marketplace profiles, coach plans, coach–athlete relations, and admin coach vetting.
+
+    **Not in this service:** registration, login, passwords, OTP, tokens, sessions → see the Auth Service contract.
+
+    ## Identity
+    The API Gateway validates the access token (RS256) and injects two headers on every authenticated request:
+    `X-User-Id` (uuid, the JWT `sub`) and `X-User-Role` (`ATHLETE | COACH | ADMIN`, the JWT `role` claim).
+    This service never parses JWTs. Clients must never send these headers themselves (the Gateway overwrites them).
+    The role claim is only refreshed when a new access token is issued: after an admin approves a coach,
+    the client must call Auth `/refresh` (or log in again) to get a token with `role = COACH`.
+
+    ## Ownership (who is the source of truth)
+    | Data | Owner | How User Service gets it |
+    |---|---|---|
+    | email, password, sessions, verified phone | Auth | events `UserRegistered`, `PhoneVerified` (topic `auth.events`) |
+    | display name, birth date, gender, avatar | User | this API |
+    | role, status (ACTIVE / SUSPENDED) | User (decision), mirrored by Auth | User publishes `UserRoleChanged`, `UserStatusChanged` (topic `user.events`) |
+    | coach–athlete relations | User (read model) | events `SubscriptionActivated / Expired / Cancelled` (topic `subscription.events`, published by Order service) |
+
+    See `events.md` for all event payloads.
+
+    ## Profile readiness
+    The profile is created asynchronously from `UserRegistered`. If a client calls `GET /users/me` before the profile exists,
+    the response is `404` with code `PROFILE_NOT_READY` and a `Retry-After: 2` header; the client should retry.
+
+    ## Conventions
+    - All JSON field names, query parameters and path parameters are `snake_case`; enum values are `UPPER_CASE`.
+    - Every response uses the standard envelope `{success, code, message, message_fa, data, timestamp}`.
+    - Money (`price`, `min_plan_price`) is an integer amount in **Toman**.
+    - Paths starting with `/internal/` are **not routed through the Gateway**; they are only reachable inside the cluster.
+    - `/api/v1/coaches/me` is a literal path and takes precedence over `/api/v1/coaches/{coach_id}`.
+
+    ## Error codes (non-exhaustive)
+    `VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `PROFILE_NOT_READY`, `COACH_PROFILE_EXISTS`,
+    `COACH_NOT_APPROVED`, `INVALID_STATE`, `ADMIN_PROTECTED`, `SELF_ACTION_NOT_ALLOWED`, `PLAN_ARCHIVED`, `INTERNAL_SERVER_ERROR`.
+servers:
+  - url: http://localhost:8080
+    description: API Gateway
+
+tags:
+  - name: Profile
+  - name: Coach (public)
+  - name: Coach (self)
+  - name: Plans
+  - name: Relations
+  - name: Admin
+  - name: Internal
+
+paths:
+  /api/v1/users/me:
+    get:
+      tags: [Profile]
+      summary: Get my profile (any authenticated role)
+      operationId: getMyProfile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/ProfileNotReady' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [Profile]
+      summary: Update my profile (any authenticated role)
+      description: Email and phone are read-only here; they are owned by Auth.
+      operationId: updateMyProfile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProfileRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfileResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users:
+    get:
+      tags: [Admin]
+      summary: List users (ADMIN)
+      operationId: listUsers
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: role, in: query, schema: { $ref: '#/components/schemas/Role' } }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/UserStatus' } }
+        - { name: q, in: query, description: Search by name or email, schema: { type: string, maxLength: 100 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/{user_id}:
+    get:
+      tags: [Admin]
+      summary: Get a user by ID (ADMIN)
+      operationId: getUser
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/UserId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/users/{user_id}/status:
+    patch:
+      tags: [Admin]
+      summary: Activate / suspend a user (ADMIN)
+      description: |
+        Publishes `UserStatusChanged`; Auth then blocks login and revokes all sessions when the status is `SUSPENDED`.
+        ADMIN accounts cannot be suspended (`403 ADMIN_PROTECTED`) and an admin cannot change their own status (`400 SELF_ACTION_NOT_ALLOWED`).
+      operationId: setUserStatus
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/UserId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/UserStatus' }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfileResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches:
+    get:
+      tags: [Coach (public)]
+      summary: Search coaches (marketplace, no authentication needed)
+      description: Only coaches with status `APPROVED` and an `ACTIVE` user account are returned.
+      operationId: searchCoaches
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: specialty, in: query, schema: { type: string, maxLength: 40 } }
+        - { name: min_price, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: max_price, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [newest, price_asc, price_desc, experience], default: newest }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/{coach_id}:
+    get:
+      tags: [Coach (public)]
+      summary: Public coach profile (no authentication needed)
+      description: Returns 404 unless the coach is `APPROVED`. `status` and `rejection_reason` are omitted in the public view.
+      operationId: getCoach
+      parameters: [{ $ref: '#/components/parameters/CoachId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/{coach_id}/plans:
+    get:
+      tags: [Plans]
+      summary: List active plans of an approved coach (public)
+      operationId: listCoachPlans
+      parameters: [{ $ref: '#/components/parameters/CoachId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanListResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/me/profile:
+    post:
+      tags: [Coach (self)]
+      summary: Apply to become a coach (ATHLETE)
+      description: |
+        Creates a coach profile with status `PENDING`. The user's role stays `ATHLETE` until an admin approves.
+        `409 COACH_PROFILE_EXISTS` if a profile already exists.
+      operationId: createCoachProfile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CoachProfileRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/me:
+    get:
+      tags: [Coach (self)]
+      summary: My coach profile (applicant or coach)
+      operationId: getMyCoachProfile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      responses:
+        '200':
+          description: OK (includes `status` and `rejection_reason`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [Coach (self)]
+      summary: Update my coach profile (applicant or coach)
+      description: |
+        Edits to an `APPROVED` profile apply immediately and do not need re-approval.
+        Editing a `REJECTED` profile re-submits it: status goes back to `PENDING`.
+      operationId: updateMyCoachProfile
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CoachProfileRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/me/plans:
+    get:
+      tags: [Plans]
+      summary: My plans, active and archived (COACH)
+      operationId: listMyPlans
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      tags: [Plans]
+      summary: Create a plan (COACH, status APPROVED)
+      operationId: createPlan
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/me/plans/{plan_id}:
+    put:
+      tags: [Plans]
+      summary: Update a plan (COACH, owner)
+      description: Existing relations keep the price and duration they were bought with. Archived plans cannot be edited (`409 PLAN_ARCHIVED`).
+      operationId: updatePlan
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/PlanId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Plans]
+      summary: Archive a plan (COACH, owner)
+      description: Soft delete. The plan is hidden from the marketplace; running relations are not affected.
+      operationId: archivePlan
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/PlanId' }
+      responses:
+        '200':
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmptyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/me/athletes:
+    get:
+      tags: [Relations]
+      summary: My athletes (COACH)
+      operationId: listMyAthletes
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RelationStatus' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelationPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/athletes/me/coaches:
+    get:
+      tags: [Relations]
+      summary: My coaches (ATHLETE)
+      operationId: listMyCoaches
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/RelationStatus' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelationListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches:
+    get:
+      tags: [Admin]
+      summary: Coach applications (ADMIN)
+      operationId: adminListCoaches
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CoachStatus' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/{coach_id}:
+    get:
+      tags: [Admin]
+      summary: One coach application with full details (ADMIN)
+      operationId: adminGetCoach
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/CoachId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/{coach_id}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve a coach application (ADMIN)
+      description: |
+        Allowed only from `PENDING` (`409 INVALID_STATE` otherwise).
+        Sets the user's role to `COACH` and publishes `CoachApproved` and `UserRoleChanged`.
+      operationId: approveCoach
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/CoachId' }
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/{coach_id}/reject:
+    post:
+      tags: [Admin]
+      summary: Reject a coach application (ADMIN)
+      description: Allowed only from `PENDING` (`409 INVALID_STATE` otherwise). Publishes `CoachRejected`.
+      operationId: rejectCoach
+      parameters:
+        - { $ref: '#/components/parameters/UserIdHeader' }
+        - { $ref: '#/components/parameters/UserRoleHeader' }
+        - { $ref: '#/components/parameters/CoachId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachProfileResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /internal/v1/plans/{plan_id}:
+    get:
+      tags: [Internal]
+      summary: Plan snapshot for Order service (cluster-internal)
+      description: Returns 409 `PLAN_ARCHIVED` if the plan can no longer be bought.
+      operationId: internalGetPlan
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InternalPlanResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /internal/v1/users/{user_id}/summary:
+    get:
+      tags: [Internal]
+      summary: Minimal user info for Notification / Chat (cluster-internal)
+      operationId: internalUserSummary
+      parameters: [{ $ref: '#/components/parameters/UserId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserSummaryResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  parameters:
+    UserIdHeader:
+      name: X-User-Id
+      in: header
+      required: true
+      description: Injected by the Gateway from the JWT `sub`. Never sent by clients.
+      schema: { type: string, format: uuid }
+    UserRoleHeader:
+      name: X-User-Role
+      in: header
+      required: true
+      description: Injected by the Gateway from the JWT `role` claim. Never sent by clients.
+      schema: { $ref: '#/components/schemas/Role' }
+    UserId: { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+    CoachId: { name: coach_id, in: path, required: true, schema: { type: string, format: uuid } }
+    PlanId: { name: plan_id, in: path, required: true, schema: { type: string, format: uuid } }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    BadRequest:
+      description: Validation failed (HTTP 400)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Authentication required (HTTP 401)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Role not allowed, or action not allowed in the current state (HTTP 403)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Resource not found (HTTP 404)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    ProfileNotReady:
+      description: |
+        The profile has not been created yet (HTTP 404, code `PROFILE_NOT_READY`) or the user does not exist (code `NOT_FOUND`).
+        On `PROFILE_NOT_READY` retry after the `Retry-After` delay.
+      headers:
+        Retry-After: { schema: { type: integer, example: 2 } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: State conflict (HTTP 409)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: Unexpected internal server error (HTTP 500)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    FieldIssue:
+      type: object
+      required: [field, code, message, message_fa]
+      properties:
+        field: { type: string, example: display_name }
+        code: { type: string, example: INVALID_FORMAT }
+        message: { type: string, example: Must not be blank }
+        message_fa: { type: string, example: این فیلد نمی‌تواند خالی باشد }
+
+    BaseResponse:
+      type: object
+      required: [success, code, message, message_fa, timestamp]
+      properties:
+        success: { type: boolean }
+        code: { type: string }
+        message: { type: string }
+        message_fa: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    EmptyResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { type: object, nullable: true }
+
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/FieldIssue' }
+              nullable: true
+
+    PageMeta:
+      type: object
+      required: [page, size, total_elements, total_pages]
+      properties:
+        page: { type: integer, example: 0 }
+        size: { type: integer, example: 20 }
+        total_elements: { type: integer, format: int64, example: 134 }
+        total_pages: { type: integer, example: 7 }
+
+    Role: { type: string, enum: [ATHLETE, COACH, ADMIN] }
+    UserStatus: { type: string, enum: [ACTIVE, SUSPENDED] }
+    CoachStatus: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+    RelationStatus: { type: string, enum: [ACTIVE, EXPIRED] }
+    PlanStatus: { type: string, enum: [ACTIVE, ARCHIVED] }
+    Gender: { type: string, enum: [MALE, FEMALE, OTHER] }
+    PlanInclude:
+      type: string
+      description: WORKOUT, DIET and SUPPLEMENT use the same words as the Storage `FileCategory`.
+      enum: [WORKOUT, DIET, SUPPLEMENT, CHAT_SUPPORT]
+
+    UserProfile:
+      type: object
+      required: [user_id, email, role, status, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string, format: email, readOnly: true }
+        display_name:
+          type: string
+          description: Initialised as "first_name last_name" from the `UserRegistered` event.
+        phone:
+          type: string
+          readOnly: true
+          nullable: true
+          pattern: '^09\d{9}$'
+          description: Verified phone, owned by Auth (from `PhoneVerified`). Always normalised to 09xxxxxxxxx.
+        avatar_url:
+          type: string
+          nullable: true
+          description: URL returned by Storage `POST /api/v1/media/images` (purpose AVATAR).
+        birth_date: { type: string, format: date, nullable: true }
+        gender: { $ref: '#/components/schemas/Gender' }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/UserStatus' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UpdateProfileRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name: { type: string, minLength: 2, maxLength: 60 }
+        avatar_url:
+          type: string
+          nullable: true
+          pattern: '^/api/v1/media/[0-9a-fA-F-]{36}$'
+        birth_date: { type: string, format: date, nullable: true }
+        gender: { $ref: '#/components/schemas/Gender' }
+
+    CoachProfileRequest:
+      type: object
+      required: [display_name, bio, specialties, experience_years]
+      properties:
+        display_name: { type: string, minLength: 2, maxLength: 60 }
+        headline: { type: string, maxLength: 120 }
+        bio: { type: string, minLength: 20, maxLength: 3000 }
+        specialties:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: string, maxLength: 40 }
+        experience_years: { type: integer, minimum: 0, maximum: 60 }
+        certifications:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [title]
+            properties:
+              title: { type: string, maxLength: 100 }
+              issuer: { type: string, maxLength: 100 }
+              year: { type: integer, minimum: 1950, maximum: 2100 }
+        instagram_handle: { type: string, nullable: true, pattern: '^[A-Za-z0-9._]{1,30}$' }
+        result_image_urls:
+          type: array
+          maxItems: 12
+          description: URLs returned by Storage `POST /api/v1/media/images` (purpose RESULT).
+          items: { type: string, pattern: '^/api/v1/media/[0-9a-fA-F-]{36}$' }
+
+    CoachProfile:
+      allOf:
+        - $ref: '#/components/schemas/CoachProfileRequest'
+        - type: object
+          required: [coach_id]
+          properties:
+            coach_id: { type: string, format: uuid, description: 'Same value as the coach user_id' }
+            avatar_url: { type: string, nullable: true }
+            status:
+              allOf: [{ $ref: '#/components/schemas/CoachStatus' }]
+              description: Returned only to the owner and to admins.
+            rejection_reason:
+              type: string
+              nullable: true
+              description: Returned only to the owner and to admins.
+            min_plan_price: { type: integer, format: int64, nullable: true }
+            active_athletes_count: { type: integer }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    CoachPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content:
+              type: array
+              items: { $ref: '#/components/schemas/CoachProfile' }
+
+    UserPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content:
+              type: array
+              items: { $ref: '#/components/schemas/UserProfile' }
+
+    PlanRequest:
+      type: object
+      required: [title, price, duration_days]
+      properties:
+        title: { type: string, minLength: 3, maxLength: 80 }
+        description: { type: string, maxLength: 1500 }
+        price: { type: integer, format: int64, minimum: 10000, description: Amount in Toman }
+        duration_days: { type: integer, minimum: 1, maximum: 365 }
+        includes:
+          type: array
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/PlanInclude' }
+
+    Plan:
+      allOf:
+        - $ref: '#/components/schemas/PlanRequest'
+        - type: object
+          required: [plan_id, coach_id, status]
+          properties:
+            plan_id: { type: string, format: uuid }
+            coach_id: { type: string, format: uuid }
+            status: { $ref: '#/components/schemas/PlanStatus' }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+
+    InternalPlan:
+      type: object
+      required: [plan_id, coach_id, title, price, duration_days, status]
+      properties:
+        plan_id: { type: string, format: uuid }
+        coach_id: { type: string, format: uuid }
+        title: { type: string }
+        price: { type: integer, format: int64, description: Amount in Toman }
+        duration_days: { type: integer }
+        includes:
+          type: array
+          items: { $ref: '#/components/schemas/PlanInclude' }
+        status: { $ref: '#/components/schemas/PlanStatus' }
+
+    Relation:
+      type: object
+      description: Read model built from the `subscription.events` topic. `relation_id` equals the subscription id.
+      properties:
+        relation_id: { type: string, format: uuid }
+        coach_id: { type: string, format: uuid }
+        coach_name: { type: string }
+        athlete_id: { type: string, format: uuid }
+        athlete_name: { type: string }
+        plan_id: { type: string, format: uuid }
+        plan_title: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/RelationStatus' }
+
+    RelationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content:
+              type: array
+              items: { $ref: '#/components/schemas/Relation' }
+
+    UserProfileResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/UserProfile' }
+
+    UserPageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/UserPage' }
+
+    CoachProfileResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachProfile' }
+
+    CoachPageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachPage' }
+
+    PlanResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Plan' }
+
+    PlanListResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Plan' }
+
+    RelationPageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/RelationPage' }
+
+    RelationListResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Relation' }
+
+    InternalPlanResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/InternalPlan' }
+
+    UserSummaryResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                user_id: { type: string, format: uuid }
+                display_name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string, nullable: true }
+                avatar_url: { type: string, nullable: true }
+                role: { $ref: '#/components/schemas/Role' }
+                status: { $ref: '#/components/schemas/UserStatus' }
