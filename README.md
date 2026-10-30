@@ -256,7 +256,7 @@ Proto does not exist fails with the exact missing path before building.
 
 After publication, never renumber existing Proto fields or reuse deleted field
 numbers/names; mark removed fields `reserved`. Comments describing validation,
-authorization, and idempotency are implementation requirements, not generated
+authorization, and credential-version checks are implementation requirements, not generated
 runtime checks.
 
 ### User credentials expiration (2.0.0)
@@ -278,6 +278,23 @@ Missing and explicitly false values both read as `false`; there is no
 Deploy the updated User implementation before Auth relies on this value,
 otherwise an old server's omitted field will read as not expired. For login
 responses, read it through `response.getUser()`; for `GetUserById`, read it directly.
+
+### User mutation requests (3.0.0)
+
+`CreateUserRequest` and `ChangeUserPasswordRequest` no longer accept an
+`idempotency_key`. The key validation, deduplication, stored results, and retention
+requirements have been removed from the contract. Deleted field numbers and
+names remain reserved: field 6 on `CreateUserRequest` and field 3 on
+`ChangeUserPasswordRequest`. All remaining field numbers are unchanged.
+
+Database uniqueness still applies to signup. Repeating a completed signup may
+return `ALREADY_EXISTS` instead of replaying the original result. Password updates
+still require `expected_credential_version`; repeating a completed update with
+the old version returns `ABORTED` instead of replaying a stored success.
+
+Version `3.0.0` reflects removal of fields and their generated Java getters/setters
+from the published API. Remove those builder/accessor calls when upgrading Auth
+and User; no idempotency key needs to be generated or sent.
 
 ### Contract versioning
 
