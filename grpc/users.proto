@@ -143,6 +143,14 @@ message UserAuthInfo {
   // Starts at 1.
   // Incremented atomically whenever the password hash is replaced.
   int64 credential_version = 8;
+
+  // Whether the user's password has expired under the server's password policy.
+  // true: expired; false: not expired. This is independent of account status.
+  // User must explicitly populate this field in every successful response
+  // containing UserAuthInfo, including all login lookups and CreateUser.
+  // Absent means unknown (e.g. an older server), not "not expired".
+  // Auth must check presence before applying its credential-expiration policy.
+  optional bool credentials_expired = 9;
 }
 
 
