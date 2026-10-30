@@ -259,9 +259,9 @@ numbers/names; mark removed fields `reserved`. Comments describing validation,
 authorization, and idempotency are implementation requirements, not generated
 runtime checks.
 
-### User credentials expiration (1.4.0)
+### User credentials expiration (2.0.0)
 
-`UserAuthInfo.credentials_expired` is an optional boolean at field number 9:
+`UserAuthInfo.credentials_expired` is a plain proto3 boolean at field number 9:
 `true` means the password is expired; `false` means it is not expired. The User
 service must explicitly set it on every returned `UserAuthInfo`. This covers
 `GetUserById`, all three `GetUserLoginInfoByEmail/Phone/Id` RPCs (inside `user`),
@@ -271,11 +271,13 @@ The contract does not calculate expiration. The User service computes the value
 from its password policy and stored data; Auth enforces the appropriate access
 and password-change/recovery policy. Expiration is separate from account status.
 
-An older server will omit the field. Consumers must call
-`hasCredentialsExpired()` before `getCredentialsExpired()`; an absent value is
-unknown and must not be silently treated as a valid password. Deploy the updated
-User implementation before requiring this field in Auth. For login responses,
-read it through `response.getUser()`; for `GetUserById`, read it directly.
+Proto3 has no `required` keyword. Populating this value is mandatory for the
+User service implementation, but is not enforced by Protobuf serialization.
+Missing and explicitly false values both read as `false`; there is no
+`hasCredentialsExpired()` method. Read `getCredentialsExpired()` directly.
+Deploy the updated User implementation before Auth relies on this value,
+otherwise an old server's omitted field will read as not expired. For login
+responses, read it through `response.getUser()`; for `GetUserById`, read it directly.
 
 ### Contract versioning
 
@@ -287,14 +289,17 @@ Each Proto has independent `MAJOR.MINOR.PATCH` artifact versions:
 | Compatible addition, such as a new optional field or RPC | `1.3.1` → `1.4.0` | `grpc/users/v1.4.0` |
 | Breaking change to the published API or required behavior | `1.4.0` → `2.0.0` | `grpc/users/v2.0.0` |
 
-Adding optional field 9 preserves the existing field numbers and wire format,
-so the expiration field is a minor release, `1.4.0`. Wire compatibility alone
-does not guarantee that an older server implements a new business requirement;
-use field presence and a coordinated rollout as described above.
+The field was introduced as optional in `1.4.0`. Version `2.0.0` removes optional
+presence while preserving field number 9 and binary wire compatibility. It is
+a major release because the generated Java API loses `hasCredentialsExpired()`
+and the builder's `clearCredentialsExpired()` no longer restores an unknown
+state. Consumers must migrate to the plain boolean semantics above. Wire
+compatibility alone does not guarantee that an older server calculates expiration.
 
 Published numbered versions are immutable: never move a release tag or overwrite
 its package. A new release needs a new version. The Proto package
 `vigo.user.v1` is independent of minor/patch artifact versions and remains
-unchanged for `1.4.0`; introducing an incompatible API requires planning its
-package/service migration too. `latest-SNAPSHOT` is a moving alias, so pin a
+unchanged for `2.0.0` because this change preserves the gRPC wire API; introducing
+an incompatible wire API requires planning its package/service migration too.
+`latest-SNAPSHOT` is a moving alias, so pin a
 numbered version when application builds must be reproducible.

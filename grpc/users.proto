@@ -148,9 +148,10 @@ message UserAuthInfo {
   // true: expired; false: not expired. This is independent of account status.
   // User must explicitly populate this field in every successful response
   // containing UserAuthInfo, including all login lookups and CreateUser.
-  // Absent means unknown (e.g. an older server), not "not expired".
-  // Auth must check presence before applying its credential-expiration policy.
-  optional bool credentials_expired = 9;
+  // This is a required service-level response value, not a proto3 required field.
+  // Proto3 uses false when absent and does not track presence for this field.
+  // Deploy User's expiration calculation before Auth relies on this value.
+  bool credentials_expired = 9;
 }
 
 
