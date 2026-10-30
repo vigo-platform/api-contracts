@@ -1,0 +1,6 @@
+**/target/
+**/.flattened-pom.xml
+__pycache__/
+*.py[cod]
+.idea/
+.DS_Store

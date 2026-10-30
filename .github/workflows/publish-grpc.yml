@@ -1,0 +1,137 @@
+name: Publish gRPC contract
+run-name: gRPC ${{ github.event_name == 'push' && github.ref_name || format('{0} v{1}', inputs.contract, inputs.version) }}
+
+on:
+  push:
+    tags:
+      - 'grpc/*/v*'
+  workflow_dispatch:
+    inputs:
+      contract:
+        description: 'Proto filename without .proto, e.g. users for grpc/users.proto'
+        type: string
+        required: true
+      version:
+        description: 'Stable package version, e.g. 1.3.0 (without v)'
+        type: string
+        required: true
+      publish:
+        description: Publish to GitHub Packages (disable to only build downloadable JARs)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Serialize registry updates so simultaneous tags cannot race the latest alias.
+# queue:max preserves pending publications instead of replacing them.
+concurrency:
+  group: grpc-contracts-publish
+  queue: max
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Resolve contract and version
+        id: target
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          CONTRACT: ${{ inputs.contract }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            python3 scripts/grpc_release.py resolve --tag "$RELEASE_TAG"
+          else
+            python3 scripts/grpc_release.py resolve --contract "$CONTRACT" --version "$VERSION"
+          fi
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: |
+            build-support/grpc-pom.xml
+            .mvn/wrapper/maven-wrapper.properties
+          server-id: github
+
+      - name: Test release selection
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Build the selected contract
+        env:
+          CONTRACT: ${{ steps.target.outputs.contract }}
+          MODULE: ${{ steps.target.outputs.module }}
+          VERSION: ${{ steps.target.outputs.version }}
+          ARTIFACT: ${{ steps.target.outputs.artifact_id }}
+        run: |
+          python3 scripts/grpc_release.py prepare --contract "$CONTRACT" --version "$VERSION"
+          ./mvnw --batch-mode --no-transfer-progress -f "$MODULE/pom.xml" \
+            -Drevision="$VERSION" -Dcontracts.source-revision="$GITHUB_SHA" clean verify
+          cp "$MODULE/.flattened-pom.xml" "$MODULE/target/$ARTIFACT-$VERSION.pom"
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.target.outputs.artifact_id }}-${{ steps.target.outputs.version }}
+          path: |
+            ${{ steps.target.outputs.module }}/target/*.jar
+            ${{ steps.target.outputs.module }}/target/*.pom
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Check published versions
+        if: github.event_name == 'push' || inputs.publish
+        id: plan
+        env:
+          CONTRACT: ${{ steps.target.outputs.contract }}
+          VERSION: ${{ steps.target.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/grpc_release.py plan --contract "$CONTRACT" --version "$VERSION"
+
+      - name: Publish immutable numbered version
+        if: (github.event_name == 'push' || inputs.publish) && steps.plan.outputs.release_exists != 'true'
+        env:
+          MODULE: ${{ steps.target.outputs.module }}
+          VERSION: ${{ steps.target.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress -f "$MODULE/pom.xml" \
+            -Drevision="$VERSION" -Dcontracts.source-revision="$GITHUB_SHA" \
+            -Dgithub.repository="${GITHUB_REPOSITORY,,}" deploy
+
+      - name: Update latest alias
+        if: (github.event_name == 'push' || inputs.publish) && steps.plan.outputs.update_latest == 'true'
+        env:
+          MODULE: ${{ steps.target.outputs.module }}
+          VERSION: ${{ steps.target.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress -f "$MODULE/pom.xml" \
+            -Drevision=latest-SNAPSHOT -Dcontracts.release-version="$VERSION" \
+            -Dcontracts.source-revision="$GITHUB_SHA" \
+            -Dgithub.repository="${GITHUB_REPOSITORY,,}" clean deploy
+
+      - name: Write build summary
+        env:
+          ARTIFACT: ${{ steps.target.outputs.artifact_id }}
+          VERSION: ${{ steps.target.outputs.version }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+          UPDATE_LATEST: ${{ steps.plan.outputs.update_latest }}
+        run: |
+          {
+            printf '### %s:%s\n\n' "$ARTIFACT" "$VERSION"
+            printf -- '- Source commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Published to GitHub Packages: %s\n' "$PUBLISH"
+            printf -- '- Updated `latest-SNAPSHOT`: %s\n' "${UPDATE_LATEST:-false}"
+            printf -- '- JARs and the resolved POM are available in workflow artifacts.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
