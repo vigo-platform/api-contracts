@@ -33,6 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-java@v6
+        id: java
         with:
           distribution: temurin
           java-version: '17'
@@ -41,4 +42,18 @@ jobs:
             build-support/grpc-pom.xml
             .mvn/wrapper/maven-wrapper.properties
       - run: python3 -m unittest discover -s tests -v
+        id: tests
       - run: python3 scripts/grpc_release.py verify-all
+        id: build
+      - name: Write verification summary
+        if: always()
+        env:
+          REPORT_KIND: verify
+          JOB_STATUS: ${{ job.status }}
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          if [[ -f scripts/action_summary.py ]]; then
+            python3 scripts/action_summary.py
+          else
+            printf '## gRPC verification\n\nSource checkout failed; see the job logs.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi

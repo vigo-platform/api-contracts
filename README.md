@@ -49,6 +49,23 @@ The JAR includes generated messages, client stubs, server base classes, and the
 original `.proto` files. A sources JAR is also published. Transport configuration
 and service implementations belong in the consuming applications.
 
+### Repository layout
+
+- `grpc/*.proto`: source contracts; each filename selects a Maven artifact.
+- `rest/*.yaml`: REST contracts, independent of the gRPC build.
+- `build-support/grpc-pom.xml`: shared Maven build template for every Proto.
+- `scripts/grpc_release.py`: selects the Proto, stages imports, generates its POM,
+  and checks numbered versions/latest before publication.
+- `scripts/action_summary.py`: writes the short Actions Summary from actual step
+  results, including failures, skipped publication, and downloadable build files.
+- `.github/workflows/grpc-ci.yml`: verifies all contracts on relevant changes.
+- `.github/workflows/publish-grpc.yml`: builds/publishes one contract selected by
+  a tag or manual inputs. Its Summary shows each build/publication stage.
+- `mvnw`, `mvnw.cmd`, `.mvn/wrapper/`: run the pinned Maven version on Unix/Windows.
+- `tests/`: verifies dynamic selection, import staging, and release safety rules.
+- `target/grpc/<name>/`: generated POM, staged Protos, generated Java, and JARs;
+  excluded from Git and recreated during builds.
+
 | Name | Proto | Maven artifact | Release tag |
 | --- | --- | --- | --- |
 | `users` | `grpc/users.proto` | `ir.vigoapp.contracts:users-grpc-contract` | `grpc/users/v1.3.0` |
