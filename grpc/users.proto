@@ -144,6 +144,14 @@ message UserAuthInfo {
   // Proto3 uses false when absent and does not track presence for this field.
   // Deploy User's expiration calculation before Auth relies on this value.
   bool credentials_expired = 9;
+
+  // Whether two-factor authentication is enabled for this account.
+  // Auth must require a second factor after successful password verification
+  // when true. Identifier verification flags do not imply 2FA enrollment.
+  // User must populate this value in every returned UserAuthInfo.
+  // Proto3 defaults to false when absent; deploy User support before Auth
+  // relies on this field. Factor secrets and OTPs must not be returned here.
+  bool two_factor_enabled = 10;
 }
 
 

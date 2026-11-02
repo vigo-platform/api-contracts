@@ -296,6 +296,21 @@ Version `3.0.0` reflects removal of fields and their generated Java getters/sett
 from the published API. Remove those builder/accessor calls when upgrading Auth
 and User; no idempotency key needs to be generated or sent.
 
+### User two-factor authentication (3.1.0)
+
+`UserAuthInfo.two_factor_enabled` is a plain proto3 boolean at field number 10.
+It indicates whether the account has 2FA enabled, independently of email/phone
+verification. User must populate it in `GetUserById`, all three login lookups
+(inside `user`), and `CreateUser`. Auth must require a second factor after
+successful password verification when this value is `true`.
+
+Java consumers read `getTwoFactorEnabled()` and producers set
+`setTwoFactorEnabled(...)`. An omitted value reads as `false`, so deploy User
+support before Auth relies on it. This field carries only enrollment status;
+factor selection, secrets, OTPs, and verification remain outside this field.
+Existing field numbers and RPC signatures are unchanged. This additive change
+is released with tag `grpc/users/v3.1.0`.
+
 ### Contract versioning
 
 Each Proto has independent `MAJOR.MINOR.PATCH` artifact versions:
