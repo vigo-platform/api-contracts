@@ -14,7 +14,6 @@ tags:
   - name: Session
   - name: Password
   - name: Configuration
-  - name: Monitoring
 paths:
   /api/v1/auth/login-password:
     post:
@@ -2155,41 +2154,6 @@ paths:
                 $ref: '#/components/schemas/Jwks'
         '500':
           $ref: '#/components/responses/InternalError'
-  /actuator:
-    get:
-      tags: [Monitoring]
-      summary: List exposed management endpoint links
-      operationId: getActuatorLinks
-      security: []
-      responses:
-        '200':
-          description: List exposed management endpoint links.
-          content:
-            application/vnd.spring-boot.actuator.v3+json:
-              schema:
-                $ref: '#/components/schemas/ActuatorDiscovery'
-            application/vnd.spring-boot.actuator.v2+json:
-              schema:
-                $ref: '#/components/schemas/ActuatorDiscovery'
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ActuatorDiscovery'
-  /actuator/prometheus:
-    get:
-      tags: [Monitoring]
-      summary: Scrape application metrics
-      operationId: scrapePrometheus
-      security: []
-      responses:
-        '200':
-          description: Scrape application metrics.
-          content:
-            text/plain; version=0.0.4; charset=utf-8:
-              schema: {type: string}
-            application/openmetrics-text; version=1.0.0; charset=utf-8:
-              schema: {type: string}
-            application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited:
-              schema: {type: string, format: binary}
 components:
   securitySchemes:
     bearerAuth:
@@ -2673,24 +2637,6 @@ components:
               e:
                 type: string
                 pattern: ^[A-Za-z0-9_-]+$
-    ActuatorDiscovery:
-      type: object
-      required: [_links]
-      properties:
-        _links:
-          type: object
-          required: [self, prometheus]
-          properties:
-            self:
-              $ref: '#/components/schemas/ActuatorLink'
-            prometheus:
-              $ref: '#/components/schemas/ActuatorLink'
-    ActuatorLink:
-      type: object
-      required: [href, templated]
-      properties:
-        href: {type: string, format: uri}
-        templated: {type: boolean, enum: [false]}
     Authenticated:
       type: object
       additionalProperties: false
