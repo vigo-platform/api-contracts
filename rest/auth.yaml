@@ -1,167 +1,419 @@
 openapi: 3.0.3
 info:
   title: Auth Service API Contract
-  description: Authentication, multi-step registration, 2FA, password recovery, and session management with Refresh Token Rotation.
-  version: 1.0.0
-
+  description: Authentication, registration, password lifecycle, and session management. This contract describes the checked-in
+    HTTP API with the default routing and security configuration. OTP endpoints expose the challenge flow. The current NotificationService
+    has no delivery transport wired in.
+  version: 0.0.1-SNAPSHOT
 servers:
-  - url: http://localhost:7070
-    description: Local Development
-
+  - url: http://localhost:8080
+    description: Default local development server.
 tags:
   - name: Login
-  - name: Signup
+  - name: Registration
   - name: Session
-  - name: Password Reset
-
+  - name: Password
+  - name: Configuration
+  - name: Monitoring
 paths:
-  # ==========================================
-  #                   LOGIN
-  # ==========================================
-  /api/auth/login-password:
+  /api/v1/auth/login-password:
     post:
       tags: [Login]
       summary: Authenticate with identifier and password
       operationId: loginWithPassword
+      description: The server can require an OTP based on account 2FA or service configuration. When all required factors
+        are verified and credentials are expired, the server returns a grant for /api/v1/auth/password/expired/complete.
+      security: []
       parameters:
-        - $ref: '#/components/parameters/UserAgentHeader'
-        - $ref: '#/components/parameters/DeviceIdHeader'
-        - $ref: '#/components/parameters/XForwardedForHeader'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LoginPasswordRequest'
+              $ref: '#/components/schemas/PasswordLoginRequest'
       responses:
         '200':
-          description: Authenticated or 2FA required
+          description: Authenticate with identifier and password.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/Authenticated'
+                          - $ref: '#/components/schemas/OtpRequired'
+                          - $ref: '#/components/schemas/PasswordChangeRequired'
               examples:
-                directLoginSuccess:
-                  summary: Direct login (2FA disabled)
+                authenticated:
                   value:
                     success: true
-                    code: AUTH_SUCCESS
                     message: Logged in successfully.
-                    message_fa: ورود با موفقیت انجام شد.
+                    messageFa: ورود با موفقیت انجام شد.
                     data:
                       step: SUCCESS
-                      access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
-                      refresh_token: 33157d94-c353-48fa-82f3-76ef06ad15bb
-                      mfa_token: null
-                    timestamp: '2026-10-18T18:30:00Z'
-                mfaRequired:
-                  summary: 2FA required
+                      tokens:
+                        tokenType: Bearer
+                        accessToken: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+                        accessExpiresIn: 900
+                        refreshToken: 8ex-3JNM4U_Z5eQtxrQEjw5v0Tc4B9c_ZtUn7ZgkZ68
+                        refreshExpiresIn: 604800
+                    timestamp: '2026-11-04T12:00:00Z'
+                otpRequired:
                   value:
                     success: true
-                    code: MFA_REQUIRED
-                    message: Two-factor authentication code sent to your email.
-                    message_fa: کد تایید دو مرحله‌ای به ایمیل شما ارسال شد.
+                    message: If the account is eligible, a verification code will be sent.
+                    messageFa: در صورت امکان ورود به حساب، کد تأیید ارسال می‌شود.
                     data:
-                      step: 2FA-EMAIL
-                      access_token: null
-                      refresh_token: null
-                      mfa_token: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
-                    timestamp: '2026-10-18T18:30:00Z'
-
-                    
-        
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: EMAIL
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
+                passwordChangeRequired:
+                  value:
+                    success: true
+                    message: Choose a new password to complete sign-in.
+                    messageFa: برای تکمیل ورود، رمز عبور جدید انتخاب کنید.
+                    data:
+                      step: PASSWORD_CHANGE_REQUIRED
+                      passwordChange:
+                        passwordChangeToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        expiresIn: 300
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_IDENTIFIER` — Identifier is neither a supported email nor a supported phone number.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_IDENTIFIER, INVALID_PASSWORD_LENGTH]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+                fieldValidation:
+                  value:
+                    success: false
+                    code: INVALID_REQUEST
+                    message: One or more fields are invalid.
+                    messageFa: یک یا چند فیلد نامعتبر است.
+                    data:
+                      errors:
+                        identifier: This field is required.
+                    timestamp: '2026-11-04T12:00:00Z'
         '401':
-          $ref: '#/components/responses/InvalidCredentialsError'
-        '403':
-          $ref: '#/components/responses/AccountForbiddenError'
+          description: '- `INVALID_CREDENTIALS` — Invalid credentials, ineligible account, or invalid current session.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_CREDENTIALS]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/login-otp-email:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `LOGIN_DISABLED` — Login is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [LOGIN_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/login-otp-email:
     post:
       tags: [Login]
-      summary: Request OTP login via email
+      summary: Request a login verification code by email
       operationId: loginWithOtpEmail
+      description: A generic OTP_REQUIRED response can also be returned for an ineligible or unknown account, or when delivery
+        is suppressed. An account with 2FA must use the password login flow.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EmailRequest'
+              $ref: '#/components/schemas/EmailLoginRequest'
       responses:
         '200':
-          description: OTP sent (or silent drop executed)
+          description: Request a login verification code by email.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
-              example:
-                success: true
-                code: OTP_SENT
-                message: If the email is registered, a verification code has been sent.
-                message_fa: در صورت ثبت بودن ایمیل، کد تایید برای شما ارسال شد.
-                data:
-                  step: 2FA-EMAIL
-                  access_token: null
-                  refresh_token: null
-                  mfa_token: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
-                timestamp: '2026-10-18T18:30:00Z'
+                $ref: '#/components/schemas/EmailOtpRequiredResponse'
+              examples:
+                otpRequired:
+                  value:
+                    success: true
+                    message: If the account is eligible, a verification code will be sent.
+                    messageFa: در صورت امکان ورود به حساب، کد تأیید ارسال می‌شود.
+                    data:
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: EMAIL
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_IDENTIFIER` — Identifier is neither a supported email nor a supported phone number.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_IDENTIFIER]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/login-otp-phone:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `LOGIN_DISABLED` — Login is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [LOGIN_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/login-otp-phone:
     post:
       tags: [Login]
-      summary: Request OTP login via SMS
+      summary: Request a login verification code by SMS
       operationId: loginWithOtpPhone
+      description: A generic OTP_REQUIRED response can also be returned for an ineligible or unknown account, or when delivery
+        is suppressed. An account with 2FA must use the password login flow.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PhoneRequest'
+              $ref: '#/components/schemas/PhoneLoginRequest'
       responses:
         '200':
-          description: OTP sent via SMS
+          description: Request a login verification code by SMS.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
-              example:
-                success: true
-                code: OTP_SENT
-                message: If the phone number is registered, an SMS verification code has been sent.
-                message_fa: در صورت ثبت بودن شماره همراه، پیامک کد تایید ارسال شد.
-                data:
-                  step: 2FA-PHONE
-                  access_token: null
-                  refresh_token: null
-                  mfa_token: PHoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7111
-                timestamp: '2026-10-18T18:30:00Z'
+                $ref: '#/components/schemas/SmsOtpRequiredResponse'
+              examples:
+                otpRequired:
+                  value:
+                    success: true
+                    message: If the account is eligible, a verification code will be sent.
+                    messageFa: در صورت امکان ورود به حساب، کد تأیید ارسال می‌شود.
+                    data:
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: SMS
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/verify:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `LOGIN_DISABLED` — Login is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [LOGIN_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/verify:
     post:
       tags: [Login]
-      summary: Verify login OTP or 2FA code
+      summary: Verify a login challenge
       operationId: verifyLoginOtp
+      description: Use the mfaToken from the login challenge. Expired credentials require completion at /api/v1/auth/password/expired/complete.
+      security: []
       parameters:
-        - $ref: '#/components/parameters/UserAgentHeader'
-        - $ref: '#/components/parameters/DeviceIdHeader'
-        - $ref: '#/components/parameters/XForwardedForHeader'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
@@ -170,76 +422,261 @@ paths:
               $ref: '#/components/schemas/VerifyOtpRequest'
       responses:
         '200':
-          description: Verification successful
+          description: Verify a login challenge.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LoginResponse'
-              example:
-                success: true
-                code: AUTH_SUCCESS
-                message: Verification successful. You are now logged in.
-                message_fa: کد تایید شد و ورود با موفقیت انجام گرفت.
-                data:
-                  step: SUCCESS
-                  access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
-                  refresh_token: 33157d94-c353-48fa-82f3-76ef06ad15bb
-                  mfa_token: null
-                timestamp: '2026-10-18T18:31:00Z'
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/Authenticated'
+                          - $ref: '#/components/schemas/PasswordChangeRequired'
+              examples:
+                authenticated:
+                  value:
+                    success: true
+                    message: Logged in successfully.
+                    messageFa: ورود با موفقیت انجام شد.
+                    data:
+                      step: SUCCESS
+                      tokens:
+                        tokenType: Bearer
+                        accessToken: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+                        accessExpiresIn: 900
+                        refreshToken: 8ex-3JNM4U_Z5eQtxrQEjw5v0Tc4B9c_ZtUn7ZgkZ68
+                        refreshExpiresIn: 604800
+                    timestamp: '2026-11-04T12:00:00Z'
+                passwordChangeRequired:
+                  value:
+                    success: true
+                    message: Choose a new password to complete sign-in.
+                    messageFa: برای تکمیل ورود، رمز عبور جدید انتخاب کنید.
+                    data:
+                      step: PASSWORD_CHANGE_REQUIRED
+                      passwordChange:
+                        passwordChangeToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        expiresIn: 300
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidOtpError'
+          description: '- `INVALID_OTP` — Invalid, expired, or used verification code or challenge.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_OTP]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  # ==========================================
-  #                   SIGNUP
-  # ==========================================
-  /api/auth/signup/initiate:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `LOGIN_DISABLED` — Login is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [LOGIN_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/register/initiate:
     post:
-      tags: [Signup]
-      summary: Step 1 - Initiate signup and send email OTP
-      operationId: signupInitiate
+      tags: [Registration]
+      summary: Request a registration verification code
+      operationId: initiateRegistration
+      description: The identifier determines whether the challenge uses email or SMS.
+      security: []
       parameters:
-        - $ref: '#/components/parameters/XForwardedForHeader'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EmailRequest'
+              $ref: '#/components/schemas/IdentifierRequest'
       responses:
         '200':
-          description: Verification OTP sent
+          description: Request a registration verification code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MfaTokenResponse'
-              example:
-                success: true
-                code: SIGNUP_OTP_SENT
-                message: Verification code sent to your email. Please check your inbox or spam folder.
-                message_fa: کد تایید به ایمیل شما ارسال شد. لطفاً صندوق ورودی یا پوشه اسپم را بررسی کنید.
-                data:
-                  mfa_token: ZW7pnSWKmTDOUpaABYKBmkOpIm_7xjQfGj9KwV6Pl0M
-                timestamp: '2026-10-18T18:30:00Z'
+                $ref: '#/components/schemas/ContactOtpChallengeResponse'
+              examples:
+                challenge:
+                  value:
+                    success: true
+                    message: Registration verification code requested.
+                    messageFa: درخواست کد تأیید ثبت‌نام انجام شد.
+                    data:
+                      mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                      channel: EMAIL
+                      expiresIn: 300
+                      resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_IDENTIFIER` — Identifier is neither a supported email nor a supported phone number.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_IDENTIFIER]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '409':
-          $ref: '#/components/responses/EmailConflictError'
+          description: '- `ACCOUNT_ALREADY_EXISTS` — An account with these details already exists.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [ACCOUNT_ALREADY_EXISTS]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/signup/verify:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `REGISTRATION_DISABLED` — Registration is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [REGISTRATION_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/register/verify:
     post:
-      tags: [Signup]
-      summary: Step 2 - Verify signup email OTP
-      operationId: signupVerify
+      tags: [Registration]
+      summary: Verify a registration challenge
+      operationId: verifyRegistrationOtp
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
@@ -248,172 +685,781 @@ paths:
               $ref: '#/components/schemas/VerifyOtpRequest'
       responses:
         '200':
-          description: Email verified, temporary token issued
+          description: Verify a registration challenge.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TempTokenResponse'
-              example:
-                success: true
-                code: EMAIL_VERIFIED
-                message: Your email has been verified. You have 15 minutes to complete your registration.
-                message_fa: ایمیل شما با موفقیت تایید شد. ۱۵ دقیقه فرصت دارید تا ثبت‌نام را تکمیل کنید.
-                data:
-                  temp_token: f2fcf1ac4827483ab1d5cda8a3780b75
-                timestamp: '2026-10-18T18:32:00Z'
+                $ref: '#/components/schemas/RegistrationGrantResponse'
+              examples:
+                verified:
+                  value:
+                    success: true
+                    message: Contact verified. Complete your registration.
+                    messageFa: اطلاعات تماس تأیید شد. ثبت‌نام را تکمیل کنید.
+                    data:
+                      registrationToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                      expiresIn: 900
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidOtpError'
+          description: '- `INVALID_OTP` — Invalid, expired, or used verification code or challenge.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_OTP]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/signup/complete:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `REGISTRATION_DISABLED` — Registration is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [REGISTRATION_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/register/complete:
     post:
-      tags: [Signup]
-      summary: Step 3 - Complete profile and create user
-      operationId: signupComplete
+      tags: [Registration]
+      summary: Create the account
+      operationId: completeRegistration
+      description: The registration grant supplies the verified contact. The response includes tokens only when the created
+        account can log in and login is enabled.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SignupCompleteRequest'
+              $ref: '#/components/schemas/RegisterRequest'
       responses:
         '201':
-          description: Account created successfully
+          description: Account created.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EmptyResponse'
-              example:
-                success: true
-                code: USER_REGISTERED
-                message: Registration completed successfully. Please sign in to continue.
-                message_fa: ثبت‌نام با موفقیت تکمیل شد. برای ادامه وارد حساب کاربری خود شوید.
-                data: null
-                timestamp: '2026-10-18T18:35:00Z'
+                $ref: '#/components/schemas/RegisteredAccountResponse'
+              examples:
+                created:
+                  value:
+                    success: true
+                    message: Account created successfully.
+                    messageFa: حساب کاربری با موفقیت ایجاد شد.
+                    data:
+                      userId: 123
+                      status: ACTIVE
+                      tokens:
+                        tokenType: Bearer
+                        accessToken: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+                        accessExpiresIn: 900
+                        refreshToken: 8ex-3JNM4U_Z5eQtxrQEjw5v0Tc4B9c_ZtUn7ZgkZ68
+                        refreshExpiresIn: 604800
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_PASSWORD_LENGTH]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidTempTokenError'
+          description: '- `INVALID_REGISTRATION_TOKEN` — Invalid, expired, or used registration grant.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REGISTRATION_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '409':
+          description: |-
+            - `ACCOUNT_ALREADY_EXISTS` — An account with these details already exists.
+            - `REGISTRATION_IN_PROGRESS` — Account creation is in progress or its outcome is uncertain.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [ACCOUNT_ALREADY_EXISTS, REGISTRATION_IN_PROGRESS]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  # ==========================================
-  #                  SESSION
-  # ==========================================
-  /api/auth/refresh:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `REGISTRATION_DISABLED` — Registration is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [REGISTRATION_DISABLED, OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/refresh:
     post:
       tags: [Session]
-      summary: Rotate refresh token and issue new access token
-      operationId: refreshToken
+      summary: Rotate a refresh token and issue a new token pair
+      operationId: refreshTokens
+      description: Replace both tokens after success. Reuse of a consumed refresh token revokes its session.
+      security: []
       parameters:
-        - $ref: '#/components/parameters/UserAgentHeader'
-        - $ref: '#/components/parameters/DeviceIdHeader'
-        - $ref: '#/components/parameters/XForwardedForHeader'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RefreshTokenRequest'
+              $ref: '#/components/schemas/RefreshRequest'
       responses:
         '200':
-          description: Tokens rotated successfully
+          description: Rotate a refresh token and issue a new token pair.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenPairResponse'
-              example:
-                success: true
-                code: TOKEN_ROTATED
-                message: Session tokens refreshed successfully.
-                message_fa: توکن‌های نشست با موفقیت تمدید شدند.
-                data:
-                  access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.newSignatureHere
-                  refresh_token: 8e5fd397-bb4f-4eb2-b7e6-70e6c382f704
-                timestamp: '2026-10-18T18:45:00Z'
+              examples:
+                rotated:
+                  value:
+                    success: true
+                    message: Tokens refreshed successfully.
+                    messageFa: توکن‌ها با موفقیت تازه‌سازی شدند.
+                    data:
+                      tokenType: Bearer
+                      accessToken: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+                      accessExpiresIn: 900
+                      refreshToken: 8ex-3JNM4U_Z5eQtxrQEjw5v0Tc4B9c_ZtUn7ZgkZ68
+                      refreshExpiresIn: 604800
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidRefreshTokenError'
+          description: '- `INVALID_REFRESH_TOKEN` — Invalid, expired, consumed, or revoked refresh token or session.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REFRESH_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: '- `RATE_LIMITED` — IP request limit exceeded.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/logout:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/auth/logout:
     post:
       tags: [Session]
-      summary: Revoke refresh token and terminate session
+      summary: Revoke the current session
       operationId: logout
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RefreshTokenRequest'
+      description: Uses the session ID and user ID in the access JWT. Existing access JWTs can remain valid until expiry.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       responses:
         '200':
-          description: Logged out successfully
+          description: Revoke the current session.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/EmptyResponse'
-              example:
-                success: true
-                code: LOGOUT_SUCCESS
-                message: You have been logged out successfully.
-                message_fa: با موفقیت از حساب کاربری خود خارج شدید.
-                data: null
-                timestamp: '2026-10-18T18:50:00Z'
-        '400':
-          $ref: '#/components/responses/ValidationError'
+              examples:
+                loggedOut:
+                  value:
+                    success: true
+                    message: Logged out successfully.
+                    messageFa: خروج با موفقیت انجام شد.
+                    data: null
+                    timestamp: '2026-11-04T12:00:00Z'
+        '401':
+          description: '- `UNAUTHORIZED` — Missing or invalid access JWT.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            WWW-Authenticate:
+              $ref: '#/components/headers/WWW-Authenticate'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [UNAUTHORIZED]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                missingAccessToken:
+                  $ref: '#/components/examples/missingAccessToken'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  # ==========================================
-  #               PASSWORD RESET
-  # ==========================================
-  /api/auth/reset-password/initiate:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/auth/logout-all:
     post:
-      tags: [Password Reset]
-      summary: Step 1 - Request password reset OTP
-      operationId: resetPasswordInitiate
+      tags: [Session]
+      summary: Revoke all sessions for the authenticated user
+      operationId: logoutAll
+      description: Uses the user ID in the access JWT. Existing access JWTs can remain valid until expiry.
+      security:
+        - bearerAuth: []
       parameters:
-        - $ref: '#/components/parameters/XForwardedForHeader'
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Revoke all sessions for the authenticated user.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmptyResponse'
+              examples:
+                loggedOut:
+                  value:
+                    success: true
+                    message: All sessions logged out successfully.
+                    messageFa: خروج از همه نشست‌ها انجام شد.
+                    data: null
+                    timestamp: '2026-11-04T12:00:00Z'
+        '401':
+          description: '- `UNAUTHORIZED` — Missing or invalid access JWT.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            WWW-Authenticate:
+              $ref: '#/components/headers/WWW-Authenticate'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [UNAUTHORIZED]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                missingAccessToken:
+                  $ref: '#/components/examples/missingAccessToken'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/auth/password/expired/complete:
+    post:
+      tags: [Password]
+      summary: Replace an expired password
+      operationId: completeExpiredPassword
+      description: Use the grant from the login flow. If the password is updated and a new session cannot be issued, the response
+        asks the user to sign in.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EmailRequest'
+              $ref: '#/components/schemas/PasswordChangeCompleteRequest'
       responses:
         '200':
-          description: Reset OTP sent (or silent drop executed)
+          description: Replace an expired password.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MfaTokenResponse'
-              example:
-                success: true
-                code: RESET_OTP_SENT
-                message: If the email is registered, a password reset code has been sent.
-                message_fa: در صورت وجود حساب کاربری، کد بازیابی رمز عبور به ایمیل شما ارسال شد.
-                data:
-                  mfa_token: XYoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
-                timestamp: '2026-10-18T18:30:00Z'
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/Authenticated'
+                          - $ref: '#/components/schemas/PasswordUpdated'
+              examples:
+                authenticated:
+                  value:
+                    success: true
+                    message: Logged in successfully.
+                    messageFa: ورود با موفقیت انجام شد.
+                    data:
+                      step: SUCCESS
+                      tokens:
+                        tokenType: Bearer
+                        accessToken: eyJhbGciOiJSUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl
+                        accessExpiresIn: 900
+                        refreshToken: 8ex-3JNM4U_Z5eQtxrQEjw5v0Tc4B9c_ZtUn7ZgkZ68
+                        refreshExpiresIn: 604800
+                    timestamp: '2026-11-04T12:00:00Z'
+                signInRequired:
+                  value:
+                    success: true
+                    message: Password updated. Please sign in.
+                    messageFa: رمز عبور تغییر کرد. لطفاً وارد شوید.
+                    data:
+                      step: PASSWORD_UPDATED_LOGIN_REQUIRED
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+            - `PASSWORD_REUSED` — New password matches the current password.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_PASSWORD_LENGTH, PASSWORD_REUSED]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+        '401':
+          description: '- `INVALID_PASSWORD_TOKEN` — Invalid, expired, or used password grant, or no valid proof for this
+            flow.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_PASSWORD_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '409':
+          description: '- `PASSWORD_UPDATE_CONFLICT` — Another update is in progress or the credentials changed.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [PASSWORD_UPDATE_CONFLICT]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
         '429':
-          $ref: '#/components/responses/AccountLockedError'
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/reset-password/verify:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `LOGIN_DISABLED` — Login is temporarily disabled.
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `PASSWORD_UPDATE_OUTCOME_UNKNOWN` — The password update could not be confirmed.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [LOGIN_DISABLED, OTP_CHANNEL_DISABLED, PASSWORD_UPDATE_OUTCOME_UNKNOWN, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/change/initiate:
     post:
-      tags: [Password Reset]
-      summary: Step 2 - Verify password reset OTP
-      operationId: resetPasswordVerify
+      tags: [Password]
+      summary: Start a password change in the current session
+      operationId: initiatePasswordChange
+      description: Provide the current password. Use the same active session for every step of this flow.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeInitiateRequest'
+      responses:
+        '200':
+          description: Start a password change in the current session.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/OtpRequired'
+                          - $ref: '#/components/schemas/PasswordChangeRequired'
+              examples:
+                otpRequired:
+                  value:
+                    success: true
+                    message: Enter the verification code.
+                    messageFa: کد تأیید را وارد کنید.
+                    data:
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: EMAIL
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
+                newPasswordRequired:
+                  value:
+                    success: true
+                    message: Set a new password.
+                    messageFa: رمز عبور جدید را تعیین کنید.
+                    data:
+                      step: PASSWORD_CHANGE_REQUIRED
+                      passwordChange:
+                        passwordChangeToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        expiresIn: 300
+                    timestamp: '2026-11-04T12:00:00Z'
+        '400':
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_PASSWORD_LENGTH]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+        '401':
+          description: |-
+            - `UNAUTHORIZED` — Missing or invalid access JWT.
+            - `INVALID_CREDENTIALS` — Invalid credentials, ineligible account, or invalid current session.
+            - `INVALID_PASSWORD_TOKEN` — Invalid, expired, or used password grant, or no valid proof for this flow.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            WWW-Authenticate:
+              $ref: '#/components/headers/WWW-Authenticate'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [UNAUTHORIZED, INVALID_CREDENTIALS, INVALID_PASSWORD_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                missingAccessToken:
+                  $ref: '#/components/examples/missingAccessToken'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/change/verify:
+    post:
+      tags: [Password]
+      summary: Verify the password-change challenge
+      operationId: verifyPasswordChangeOtp
+      description: Use the same active session that initiated the change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
@@ -422,476 +1468,1419 @@ paths:
               $ref: '#/components/schemas/VerifyOtpRequest'
       responses:
         '200':
-          description: OTP verified, temporary token issued
+          description: Verify the password-change challenge.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TempTokenResponse'
-              example:
-                success: true
-                code: RESET_OTP_VERIFIED
-                message: Verification successful. You can now set your new password.
-                message_fa: کد تایید شد. اکنون می‌توانید رمز عبور جدید خود را تعیین کنید.
-                data:
-                  temp_token: 200a9aa361a746e8ab86d3e59349f410
-                timestamp: '2026-10-18T18:32:00Z'
+                $ref: '#/components/schemas/PasswordChangeRequiredResponse'
+              examples:
+                newPasswordRequired:
+                  value:
+                    success: true
+                    message: Set a new password.
+                    messageFa: رمز عبور جدید را تعیین کنید.
+                    data:
+                      step: PASSWORD_CHANGE_REQUIRED
+                      passwordChange:
+                        passwordChangeToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        expiresIn: 300
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidOtpError'
+          description: |-
+            - `UNAUTHORIZED` — Missing or invalid access JWT.
+            - `INVALID_CREDENTIALS` — Invalid credentials, ineligible account, or invalid current session.
+            - `INVALID_OTP` — Invalid, expired, or used verification code or challenge.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            WWW-Authenticate:
+              $ref: '#/components/headers/WWW-Authenticate'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [UNAUTHORIZED, INVALID_CREDENTIALS, INVALID_OTP]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                missingAccessToken:
+                  $ref: '#/components/examples/missingAccessToken'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-  /api/auth/reset-password/complete:
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/change/complete:
     post:
-      tags: [Password Reset]
-      summary: Step 3 - Set new password and revoke all active sessions
-      operationId: resetPasswordComplete
+      tags: [Password]
+      summary: Set a new password from the current session
+      operationId: completePasswordChange
+      description: Use a password-change grant from the same session. Auth attempts to revoke sessions with older credentials
+        after the update.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ResetPasswordCompleteRequest'
+              $ref: '#/components/schemas/PasswordChangeCompleteRequest'
       responses:
         '200':
-          description: Password updated and sessions revoked
+          description: Set a new password from the current session.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EmptyResponse'
-              example:
-                success: true
-                code: PASSWORD_UPDATED
-                message: Your password has been updated and all active sessions have been terminated.
-                message_fa: رمز عبور شما تغییر یافت و تمامی نشست‌های فعال در سایر دستگاه‌ها بسته شد.
-                data: null
-                timestamp: '2026-10-18T18:35:00Z'
+                $ref: '#/components/schemas/PasswordUpdatedResponse'
+              examples:
+                signInRequired:
+                  value:
+                    success: true
+                    message: Password updated. Sign in with your new password.
+                    messageFa: رمز عبور تغییر کرد. با رمز جدید وارد شوید.
+                    data:
+                      step: PASSWORD_UPDATED_LOGIN_REQUIRED
+                    timestamp: '2026-11-04T12:00:00Z'
         '400':
-          $ref: '#/components/responses/ValidationError'
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+            - `PASSWORD_REUSED` — New password matches the current password.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_PASSWORD_LENGTH, PASSWORD_REUSED]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
         '401':
-          $ref: '#/components/responses/InvalidTempTokenError'
+          description: |-
+            - `UNAUTHORIZED` — Missing or invalid access JWT.
+            - `INVALID_CREDENTIALS` — Invalid credentials, ineligible account, or invalid current session.
+            - `INVALID_PASSWORD_TOKEN` — Invalid, expired, or used password grant, or no valid proof for this flow.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            WWW-Authenticate:
+              $ref: '#/components/headers/WWW-Authenticate'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [UNAUTHORIZED, INVALID_CREDENTIALS, INVALID_PASSWORD_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                missingAccessToken:
+                  $ref: '#/components/examples/missingAccessToken'
+        '409':
+          description: '- `PASSWORD_UPDATE_CONFLICT` — Another update is in progress or the credentials changed.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [PASSWORD_UPDATE_CONFLICT]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '500':
-          $ref: '#/components/responses/InternalServerError'
-
-# ==========================================
-#                 COMPONENTS
-# ==========================================
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `PASSWORD_UPDATE_OUTCOME_UNKNOWN` — The password update could not be confirmed.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, PASSWORD_UPDATE_OUTCOME_UNKNOWN, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/reset/initiate:
+    post:
+      tags: [Password]
+      summary: Request a password reset verification code
+      operationId: initiatePasswordReset
+      description: Recovery preparation runs asynchronously. The response is generic and does not confirm account eligibility
+        or delivery.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentifierRequest'
+      responses:
+        '200':
+          description: Request a password reset verification code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactOtpRequiredResponse'
+              examples:
+                otpRequired:
+                  value:
+                    success: true
+                    message: If the account is eligible, a verification code will be sent.
+                    messageFa: در صورت امکان بازیابی حساب، کد تأیید ارسال می‌شود.
+                    data:
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: EMAIL
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
+        '400':
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_IDENTIFIER` — Identifier is neither a supported email nor a supported phone number.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_IDENTIFIER]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `OTP_COOLDOWN` — Wait before requesting another code.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, OTP_COOLDOWN]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/reset/verify:
+    post:
+      tags: [Password]
+      summary: Verify a password reset challenge
+      operationId: verifyPasswordResetOtp
+      description: With 2FA enabled, the first valid code can return OTP_REQUIRED for the other channel. Submit the new mfaToken
+        and second code to this same route.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: Verify a password reset challenge.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/ContactOtpRequired'
+                          - $ref: '#/components/schemas/PasswordResetRequired'
+              examples:
+                secondOtpRequired:
+                  value:
+                    success: true
+                    message: Enter the verification code.
+                    messageFa: کد تأیید را وارد کنید.
+                    data:
+                      step: OTP_REQUIRED
+                      challenge:
+                        mfaToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        channel: SMS
+                        expiresIn: 300
+                        resendAfter: 60
+                    timestamp: '2026-11-04T12:00:00Z'
+                newPasswordRequired:
+                  value:
+                    success: true
+                    message: Set a new password.
+                    messageFa: رمز عبور جدید را تعیین کنید.
+                    data:
+                      step: PASSWORD_RESET_REQUIRED
+                      passwordReset:
+                        passwordResetToken: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+                        expiresIn: 300
+                    timestamp: '2026-11-04T12:00:00Z'
+        '400':
+          description: '- `INVALID_REQUEST` — Invalid input or an unreadable request body.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+        '401':
+          description: '- `INVALID_OTP` — Invalid, expired, or used verification code or challenge.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_OTP]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/password/reset/complete:
+    post:
+      tags: [Password]
+      summary: Set a new password using a recovery grant
+      operationId: completePasswordReset
+      description: Use the passwordResetToken from reset verification. Auth attempts to revoke sessions with older credentials
+        after the update.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/UserAgent'
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetCompleteRequest'
+      responses:
+        '200':
+          description: Set a new password using a recovery grant.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Pragma:
+              $ref: '#/components/headers/Pragma'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasswordUpdatedResponse'
+              examples:
+                signInRequired:
+                  value:
+                    success: true
+                    message: Password updated. Sign in with your new password.
+                    messageFa: رمز عبور تغییر کرد. با رمز جدید وارد شوید.
+                    data:
+                      step: PASSWORD_UPDATED_LOGIN_REQUIRED
+                    timestamp: '2026-11-04T12:00:00Z'
+        '400':
+          description: |-
+            - `INVALID_REQUEST` — Invalid input or an unreadable request body.
+            - `INVALID_PASSWORD_LENGTH` — Password exceeds 72 UTF-8 bytes.
+            - `PASSWORD_REUSED` — New password matches the current password.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_REQUEST, INVALID_PASSWORD_LENGTH, PASSWORD_REUSED]}
+                      data:
+                        $ref: '#/components/schemas/ValidationData'
+              examples:
+                unreadableBody:
+                  $ref: '#/components/examples/unreadableBody'
+        '401':
+          description: '- `INVALID_PASSWORD_TOKEN` — Invalid, expired, or used password grant, or no valid proof for this
+            flow.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [INVALID_PASSWORD_TOKEN]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '409':
+          description: '- `PASSWORD_UPDATE_CONFLICT` — Another update is in progress or the credentials changed.'
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [PASSWORD_UPDATE_CONFLICT]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+        '429':
+          description: |-
+            - `RATE_LIMITED` — IP request limit exceeded.
+            - `LOGIN_TEMPORARILY_LOCKED` — Too many failed attempts temporarily locked the identifier or account.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+            Retry-After:
+              $ref: '#/components/headers/Retry-After'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [RATE_LIMITED, LOGIN_TEMPORARILY_LOCKED]}
+                      data:
+                        $ref: '#/components/schemas/RetryData'
+              examples:
+                rateLimited:
+                  $ref: '#/components/examples/rateLimited'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: |-
+            - `OTP_CHANNEL_DISABLED` — The requested verification channel is disabled.
+            - `PASSWORD_UPDATE_OUTCOME_UNKNOWN` — The password update could not be confirmed.
+            - `AUTH_SERVICE_UNAVAILABLE` — A required dependency is temporarily unavailable.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+                  - type: object
+                    properties:
+                      code: {type: string, enum: [OTP_CHANNEL_DISABLED, PASSWORD_UPDATE_OUTCOME_UNKNOWN, AUTH_SERVICE_UNAVAILABLE]}
+                      data:
+                        $ref: '#/components/schemas/NullData'
+              examples:
+                serviceUnavailable:
+                  $ref: '#/components/examples/serviceUnavailable'
+  /api/v1/auth/settings:
+    get:
+      tags: [Configuration]
+      summary: Read public authentication settings
+      operationId: getAuthSettings
+      security: []
+      responses:
+        '200':
+          description: Read public authentication settings.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/Cache-Control'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSettingsResponse'
+              examples:
+                settings:
+                  value:
+                    success: true
+                    message: Auth settings retrieved successfully.
+                    messageFa: تنظیمات احراز هویت با موفقیت دریافت شد.
+                    data:
+                      loginEnabled: true
+                      registerEnabled: true
+                      defaultOtpChannel: EMAIL
+                      emailNotificationEnabled: false
+                      smsNotificationEnabled: false
+                      inAppNotificationEnabled: false
+                    timestamp: '2026-11-04T12:00:00Z'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /.well-known/jwks.json:
+    get:
+      tags: [Configuration]
+      summary: Read the public RSA JSON Web Key Set
+      operationId: getJwks
+      security: []
+      responses:
+        '200':
+          description: Read the public RSA JSON Web Key Set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Jwks'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator:
+    get:
+      tags: [Monitoring]
+      summary: List exposed management endpoint links
+      operationId: getActuatorLinks
+      security: []
+      responses:
+        '200':
+          description: List exposed management endpoint links.
+          content:
+            application/vnd.spring-boot.actuator.v3+json:
+              schema:
+                $ref: '#/components/schemas/ActuatorDiscovery'
+            application/vnd.spring-boot.actuator.v2+json:
+              schema:
+                $ref: '#/components/schemas/ActuatorDiscovery'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActuatorDiscovery'
+  /actuator/prometheus:
+    get:
+      tags: [Monitoring]
+      summary: Scrape application metrics
+      operationId: scrapePrometheus
+      security: []
+      responses:
+        '200':
+          description: Scrape application metrics.
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema: {type: string}
+            application/openmetrics-text; version=1.0.0; charset=utf-8:
+              schema: {type: string}
+            application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited:
+              schema: {type: string, format: binary}
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-
   parameters:
-    UserAgentHeader:
+    UserAgent:
       name: User-Agent
       in: header
       required: false
-      schema:
-        type: string
-    DeviceIdHeader:
+      description: Client metadata, truncated by the server to 512 characters.
+      schema: {type: string}
+    DeviceId:
       name: X-Device-Id
       in: header
       required: false
+      description: Optional client device identifier, truncated by the server to 128 characters.
+      schema: {type: string}
+  headers:
+    Cache-Control:
+      description: Auth response cache policy.
+      required: true
+      schema: {type: string, enum: [no-store]}
+    Pragma:
+      description: Compatibility cache header on auth workflow responses.
+      required: true
+      schema: {type: string, enum: [no-cache]}
+    Retry-After:
+      description: Wait time in seconds.
+      required: true
       schema:
-        type: string
-    XForwardedForHeader:
-      name: X-Forwarded-For
-      in: header
+        type: integer
+        format: int64
+        minimum: 1
+    WWW-Authenticate:
+      description: Present when the security layer rejects a missing or invalid access JWT.
       required: false
-      schema:
-        type: string
-
-  # ------------------------------------
-  #       Standard Error Responses
-  # ------------------------------------
+      schema: {type: string, enum: [Bearer]}
   responses:
-    ValidationError:
-      description: Request input validation failed (HTTP 400)
+    UnsupportedMediaType:
+      description: Unsupported request media type.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/Cache-Control'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ValidationErrorResponse'
-          example:
-            success: false
-            code: VALIDATION_FAILED
-            message: Input validation failed. Please check the provided fields.
-            message_fa: اعتبارسنجی ورودی‌ها ناموفق بود. لطفاً مقادیر وارد شده را بررسی کنید.
-            data:
-              - field: password
-                code: INVALID_PASSWORD_FORMAT
-                message: Password must be 8-32 characters and include uppercase, lowercase, and numbers.
-                message_fa: رمز عبور باید بین ۸ تا ۳۲ کاراکتر و شامل حروف کوچک، بزرگ و عدد باشد.
-              - field: email
-                code: INVALID_EMAIL
-                message: Must be a well-formed email address.
-                message_fa: فرمت آدرس ایمیل وارد شده معتبر نیست.
-            timestamp: '2026-10-18T18:30:00Z'
-
-    InvalidCredentialsError:
-      description: Invalid username or password (HTTP 401)
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  code: {type: string, enum: [UNSUPPORTED_MEDIA_TYPE]}
+                  data:
+                    $ref: '#/components/schemas/NullData'
+          examples:
+            unsupportedMediaType:
+              value:
+                success: false
+                code: UNSUPPORTED_MEDIA_TYPE
+                message: Use an application/json request body.
+                messageFa: بدنه درخواست باید JSON باشد.
+                data: null
+                timestamp: '2026-11-04T12:00:00Z'
+    InternalError:
+      description: Unexpected server error.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/Cache-Control'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: INVALID_CREDENTIALS
-            message: Invalid identifier or password. Please check your entries and try again.
-            message_fa: نام کاربری یا رمز عبور اشتباه است. ورودی‌های خود را بررسی و مجدداً تلاش کنید.
-            data: null
-            timestamp: '2026-10-18T18:30:00Z'
-
-    InvalidOtpError:
-      description: Invalid or expired OTP / MFA token (HTTP 401)
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  code: {type: string, enum: [INTERNAL_ERROR]}
+                  data:
+                    $ref: '#/components/schemas/NullData'
+          examples:
+            internalError:
+              value:
+                success: false
+                code: INTERNAL_ERROR
+                message: An unexpected error occurred.
+                messageFa: خطای غیرمنتظره رخ داد.
+                data: null
+                timestamp: '2026-11-04T12:00:00Z'
+    ServiceUnavailable:
+      description: A required service or data store is temporarily unavailable.
+      headers:
+        Cache-Control:
+          $ref: '#/components/headers/Cache-Control'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: INVALID_OR_EXPIRED_OTP
-            message: The verification code is incorrect or has expired.
-            message_fa: کد تایید وارد شده اشتباه است یا منقضی شده است.
-            data: null
-            timestamp: '2026-10-18T18:32:00Z'
-
-    InvalidTempTokenError:
-      description: Expired or invalid temporary token (HTTP 401)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: TEMP_TOKEN_EXPIRED
-            message: Your registration session has expired. Please start the verification process again.
-            message_fa: زمان مجاز این مرحله به پایان رسیده است. لطفاً فرآیند تایید را مجدداً آغاز کنید.
-            data: null
-            timestamp: '2026-10-18T18:50:00Z'
-
-    InvalidRefreshTokenError:
-      description: Expired, revoked, or reused refresh token (HTTP 401)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: INVALID_REFRESH_TOKEN
-            message: Session expired or invalid refresh token. Please sign in again.
-            message_fa: نشست شما منقضی شده یا توکن نامعتبر است. لطفاً مجدداً وارد شوید.
-            data: null
-            timestamp: '2026-10-18T18:45:00Z'
-
-    AccountForbiddenError:
-      description: Account suspended or password expired (HTTP 403)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: ACCOUNT_SUSPENDED
-            message: Your account has been suspended. Please contact support.
-            message_fa: حساب کاربری شما مسدود شده است. لطفاً با پشتیبانی تماس بگیرید.
-            data: null
-            timestamp: '2026-10-18T18:30:00Z'
-
-    EmailConflictError:
-      description: Email already registered (HTTP 409)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: EMAIL_ALREADY_EXISTS
-            message: An account with this email address already exists.
-            message_fa: این آدرس ایمیل قبلاً در سامانه ثبت شده است.
-            data: null
-            timestamp: '2026-10-18T18:30:00Z'
-
-    AccountLockedError:
-      description: Rate limit exceeded or account temporarily locked (HTTP 429)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/LockErrorResponse'
-          example:
-            success: false
-            code: ACCOUNT_TEMP_LOCKED
-            message: Too many failed attempts. Your account is locked for 15 minutes.
-            message_fa: به دلیل تلاش‌های ناموفق بیش از حد، حساب شما به مدت ۱۵ دقیقه قفل شد.
-            data:
-              retry_after_seconds: 899
-              locked_until: '2026-10-18T18:45:00Z'
-            timestamp: '2026-10-18T18:30:01Z'
-
-    InternalServerError:
-      description: Unexpected internal server error (HTTP 500)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/EmptyResponse'
-          example:
-            success: false
-            code: INTERNAL_SERVER_ERROR
-            message: An unexpected error occurred on the server. Please try again later.
-            message_fa: خطای غیرمنتظره‌ای در سرور رخ داده است. لطفاً دقایقی دیگر مجدداً تلاش کنید.
-            data: null
-            timestamp: '2026-10-18T18:30:00Z'
-
-  # ------------------------------------
-  #               Schemas
-  # ------------------------------------
+            allOf:
+              - $ref: '#/components/schemas/ErrorEnvelope'
+              - type: object
+                properties:
+                  code: {type: string, enum: [AUTH_SERVICE_UNAVAILABLE]}
+                  data:
+                    $ref: '#/components/schemas/NullData'
+          examples:
+            serviceUnavailable:
+              value:
+                success: false
+                code: AUTH_SERVICE_UNAVAILABLE
+                message: Authentication is temporarily unavailable.
+                messageFa: سرویس احراز هویت موقتاً در دسترس نیست.
+                data: null
+                timestamp: '2026-11-04T12:00:00Z'
+  examples:
+    unreadableBody:
+      value:
+        success: false
+        code: INVALID_REQUEST
+        message: Send a valid JSON body with the expected field types.
+        messageFa: بدنهٔ درخواست باید JSON معتبر با نوع دادهٔ درست باشد.
+        data: null
+        timestamp: '2026-11-04T12:00:00Z'
+    missingAccessToken:
+      value:
+        success: false
+        code: UNAUTHORIZED
+        message: Authentication is required.
+        messageFa: احراز هویت الزامی است.
+        data: null
+        timestamp: '2026-11-04T12:00:00Z'
+    serviceUnavailable:
+      value:
+        success: false
+        code: AUTH_SERVICE_UNAVAILABLE
+        message: Authentication is temporarily unavailable.
+        messageFa: سرویس احراز هویت موقتاً در دسترس نیست.
+        data: null
+        timestamp: '2026-11-04T12:00:00Z'
+    rateLimited:
+      value:
+        success: false
+        code: RATE_LIMITED
+        message: Too many attempts. Please try again later.
+        messageFa: تعداد درخواست‌ها بیش از حد مجاز است. کمی بعد دوباره تلاش کنید.
+        data:
+          retryAfterSeconds: 42
+        timestamp: '2026-11-04T12:00:00Z'
   schemas:
-    LoginPasswordRequest:
+    OpaqueToken:
+      type: string
+      pattern: ^[A-Za-z0-9_-]{43}$
+      description: Opaque token issued by Auth. Preserve its value exactly.
+      example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+    Identifier:
+      type: string
+      minLength: 1
+      maxLength: 254
+      description: Email or mobile number. Surrounding whitespace is stripped. Email is lowercased. Phone accepts an international
+        number starting with + or Iranian mobile notation with no prefix, 0, or 0098.
+      example: user@example.com
+    ExistingPassword:
+      type: string
+      format: password
+      minLength: 1
+      maxLength: 72
+      description: Must contain a non-whitespace character and occupy at most 72 UTF-8 bytes.
+    NewPassword:
+      type: string
+      format: password
+      maxLength: 72
+      description: Must contain a non-whitespace character, have at least eight UTF-16 code units (Java String length), and
+        occupy at most 72 UTF-8 bytes.
+    PasswordLoginRequest:
       type: object
       required: [identifier, password]
       properties:
         identifier:
-          type: string
-          minLength: 3
-          maxLength: 255
-          example: user@example.com
+          $ref: '#/components/schemas/Identifier'
         password:
-          type: string
-          minLength: 8
-          maxLength: 32
-          example: StrongPass123!
-
-    EmailRequest:
+          $ref: '#/components/schemas/ExistingPassword'
+    EmailLoginRequest:
       type: object
       required: [email]
       properties:
         email:
           type: string
           format: email
-          minLength: 3
-          maxLength: 255
+          minLength: 1
+          maxLength: 254
           example: user@example.com
-
-    PhoneRequest:
+    PhoneLoginRequest:
       type: object
       required: [phone]
       properties:
         phone:
           type: string
-          pattern: '^(?:\+98|0098|0)?9\d{9}$'
-          example: '09123456789'
-
+          pattern: ^(?:\+[1-9][0-9]{1,14}|(?:0098|0)?9[0-9]{9})$
+          example: 09123456789
     VerifyOtpRequest:
       type: object
-      required: [mfa_token, otp]
+      description: 'Use mfaToken in new clients. Accepted input aliases: mfa, mfa_token. Send a single spelling.'
+      required: [otp]
       properties:
-        mfa_token:
+        mfaToken:
           type: string
-          maxLength: 255
+          pattern: ^[A-Za-z0-9_-]{43}$
           example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
         otp:
           type: string
-          minLength: 5
-          maxLength: 6
-          example: '89764'
-
-    SignupCompleteRequest:
+          pattern: ^[0-9]{6}$
+          example: '012345'
+        mfa:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for mfaToken.
+        mfa_token:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for mfaToken.
+      anyOf:
+        - required: [mfaToken]
+        - required: [mfa]
+        - required: [mfa_token]
+    IdentifierRequest:
       type: object
-      required: [temp_token, first_name, last_name, password]
+      required: [identifier]
       properties:
-        temp_token:
+        identifier:
+          $ref: '#/components/schemas/Identifier'
+    RegisterRequest:
+      type: object
+      description: 'Use registrationToken in new clients. Accepted input aliases: registration_token. Send a single spelling.'
+      required: [password]
+      properties:
+        registrationToken:
           type: string
-          example: f2fcf1ac4827483ab1d5cda8a3780b75
-        first_name:
-          type: string
-          minLength: 2
-          maxLength: 50
-          pattern: '^[\p{L}\s]+$'
-          example: Taha
-        last_name:
-          type: string
-          minLength: 2
-          maxLength: 50
-          pattern: '^[\p{L}\s]+$'
-          example: Amini
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
         password:
-          $ref: '#/components/schemas/StrongPassword'
-
-    ResetPasswordCompleteRequest:
-      type: object
-      required: [temp_token, password]
-      properties:
-        temp_token:
+          $ref: '#/components/schemas/NewPassword'
+        firstName:
           type: string
-          example: 200a9aa361a746e8ab86d3e59349f410
-        password:
-          $ref: '#/components/schemas/StrongPassword'
-
-    RefreshTokenRequest:
+          maxLength: 100
+          nullable: true
+        lastName:
+          type: string
+          maxLength: 100
+          nullable: true
+        registration_token:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for registrationToken.
+      anyOf:
+        - required: [registrationToken]
+        - required: [registration_token]
+    RefreshRequest:
       type: object
-      required: [refresh_token]
+      description: 'Use refreshToken in new clients. Accepted input aliases: refresh_token. Send a single spelling.'
       properties:
+        refreshToken:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
         refresh_token:
           type: string
-          format: uuid
-          minLength: 36
-          maxLength: 36
-          example: ece46799-1587-44ec-b089-22a8e2f77909
-
-    StrongPassword:
-      type: string
-      minLength: 8
-      maxLength: 32
-      pattern: '^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z0-9!@#$%^&*()_+\-=\[\]{};'':",./<>?]+$'
-      example: StrongPass123!
-
-    # ------------------------------------
-    #             Data Payloads
-    # ------------------------------------
-    LoginData:
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for refreshToken.
+      anyOf:
+        - required: [refreshToken]
+        - required: [refresh_token]
+    PasswordChangeInitiateRequest:
       type: object
+      required: [currentPassword]
+      properties:
+        currentPassword:
+          $ref: '#/components/schemas/ExistingPassword'
+    PasswordChangeCompleteRequest:
+      type: object
+      description: 'Use passwordChangeToken in new clients. Accepted input aliases: password_change_token. Send a single spelling.'
+      required: [newPassword]
+      properties:
+        passwordChangeToken:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+        newPassword:
+          $ref: '#/components/schemas/NewPassword'
+        password_change_token:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for passwordChangeToken.
+      anyOf:
+        - required: [passwordChangeToken]
+        - required: [password_change_token]
+    PasswordResetCompleteRequest:
+      type: object
+      description: 'Use passwordResetToken in new clients. Accepted input aliases: password_reset_token. Send a single spelling.'
+      required: [newPassword]
+      properties:
+        passwordResetToken:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+        newPassword:
+          $ref: '#/components/schemas/NewPassword'
+        password_reset_token:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          example: CUoGjDYn0yyAscrbaE9SaJEcUcjHcdwLj07ZoZu7yu8
+          description: Input alias for passwordResetToken.
+      anyOf:
+        - required: [passwordResetToken]
+        - required: [password_reset_token]
+    OtpChannel: {type: string, enum: [EMAIL, SMS, IN_APP]}
+    ContactOtpChannel: {type: string, enum: [EMAIL, SMS]}
+    TokenPair:
+      type: object
+      additionalProperties: false
+      required: [tokenType, accessToken, accessExpiresIn, refreshToken, refreshExpiresIn]
+      properties:
+        tokenType: {type: string, enum: [Bearer]}
+        accessToken:
+          type: string
+          description: RS256 access JWT.
+        accessExpiresIn:
+          type: integer
+          format: int64
+          description: Access token lifetime in seconds.
+        refreshToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        refreshExpiresIn:
+          type: integer
+          format: int64
+          description: Refresh token lifetime in seconds, capped by session expiry.
+    OtpChallenge:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, channel, expiresIn, resendAfter]
+      properties:
+        mfaToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        channel:
+          $ref: '#/components/schemas/OtpChannel'
+        expiresIn:
+          type: integer
+          format: int64
+          description: Challenge lifetime in seconds.
+        resendAfter:
+          type: integer
+          format: int64
+          description: Wait in seconds before requesting another code.
+    EmailOtpChallenge:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, channel, expiresIn, resendAfter]
+      properties:
+        mfaToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        channel: {type: string, enum: [EMAIL]}
+        expiresIn:
+          type: integer
+          format: int64
+          description: Challenge lifetime in seconds.
+        resendAfter:
+          type: integer
+          format: int64
+          description: Wait in seconds before requesting another code.
+    SmsOtpChallenge:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, channel, expiresIn, resendAfter]
+      properties:
+        mfaToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        channel: {type: string, enum: [SMS]}
+        expiresIn:
+          type: integer
+          format: int64
+          description: Challenge lifetime in seconds.
+        resendAfter:
+          type: integer
+          format: int64
+          description: Wait in seconds before requesting another code.
+    ContactOtpChallenge:
+      type: object
+      additionalProperties: false
+      required: [mfaToken, channel, expiresIn, resendAfter]
+      properties:
+        mfaToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        channel:
+          $ref: '#/components/schemas/ContactOtpChannel'
+        expiresIn:
+          type: integer
+          format: int64
+          description: Challenge lifetime in seconds.
+        resendAfter:
+          type: integer
+          format: int64
+          description: Wait in seconds before requesting another code.
+    RegistrationGrant:
+      type: object
+      additionalProperties: false
+      required: [registrationToken, expiresIn]
+      properties:
+        registrationToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        expiresIn:
+          type: integer
+          format: int64
+          description: Grant lifetime in seconds.
+    PasswordChangeGrant:
+      type: object
+      additionalProperties: false
+      required: [passwordChangeToken, expiresIn]
+      properties:
+        passwordChangeToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        expiresIn:
+          type: integer
+          format: int64
+          description: Grant lifetime in seconds.
+    PasswordResetGrant:
+      type: object
+      additionalProperties: false
+      required: [passwordResetToken, expiresIn]
+      properties:
+        passwordResetToken:
+          $ref: '#/components/schemas/OpaqueToken'
+        expiresIn:
+          type: integer
+          format: int64
+          description: Grant lifetime in seconds.
+    RegisteredAccount:
+      type: object
+      additionalProperties: false
+      required: [userId, status]
+      properties:
+        userId:
+          type: integer
+          format: int64
+          minimum: 1
+        status: {type: string, enum: [UNKNOWN, PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED]}
+        tokens:
+          $ref: '#/components/schemas/TokenPair'
+    AuthSettings:
+      type: object
+      additionalProperties: false
+      required: [loginEnabled, registerEnabled, defaultOtpChannel, emailNotificationEnabled, smsNotificationEnabled, inAppNotificationEnabled]
+      properties:
+        loginEnabled: {type: boolean}
+        registerEnabled: {type: boolean}
+        defaultOtpChannel:
+          $ref: '#/components/schemas/OtpChannel'
+        emailNotificationEnabled: {type: boolean}
+        smsNotificationEnabled: {type: boolean}
+        inAppNotificationEnabled: {type: boolean}
+    Jwks:
+      type: object
+      additionalProperties: false
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [kty, kid, n, e]
+            properties:
+              kty: {type: string, enum: [RSA]}
+              kid: {type: string}
+              n:
+                type: string
+                pattern: ^[A-Za-z0-9_-]+$
+              e:
+                type: string
+                pattern: ^[A-Za-z0-9_-]+$
+    ActuatorDiscovery:
+      type: object
+      required: [_links]
+      properties:
+        _links:
+          type: object
+          required: [self, prometheus]
+          properties:
+            self:
+              $ref: '#/components/schemas/ActuatorLink'
+            prometheus:
+              $ref: '#/components/schemas/ActuatorLink'
+    ActuatorLink:
+      type: object
+      required: [href, templated]
+      properties:
+        href: {type: string, format: uri}
+        templated: {type: boolean, enum: [false]}
+    Authenticated:
+      type: object
+      additionalProperties: false
+      required: [step, tokens]
+      properties:
+        step: {type: string, enum: [SUCCESS]}
+        tokens:
+          $ref: '#/components/schemas/TokenPair'
+    OtpRequired:
+      type: object
+      additionalProperties: false
+      required: [step, challenge]
+      properties:
+        step: {type: string, enum: [OTP_REQUIRED]}
+        challenge:
+          $ref: '#/components/schemas/OtpChallenge'
+    EmailOtpRequired:
+      type: object
+      additionalProperties: false
+      required: [step, challenge]
+      properties:
+        step: {type: string, enum: [OTP_REQUIRED]}
+        challenge:
+          $ref: '#/components/schemas/EmailOtpChallenge'
+    SmsOtpRequired:
+      type: object
+      additionalProperties: false
+      required: [step, challenge]
+      properties:
+        step: {type: string, enum: [OTP_REQUIRED]}
+        challenge:
+          $ref: '#/components/schemas/SmsOtpChallenge'
+    ContactOtpRequired:
+      type: object
+      additionalProperties: false
+      required: [step, challenge]
+      properties:
+        step: {type: string, enum: [OTP_REQUIRED]}
+        challenge:
+          $ref: '#/components/schemas/ContactOtpChallenge'
+    PasswordChangeRequired:
+      type: object
+      additionalProperties: false
+      required: [step, passwordChange]
+      properties:
+        step: {type: string, enum: [PASSWORD_CHANGE_REQUIRED]}
+        passwordChange:
+          $ref: '#/components/schemas/PasswordChangeGrant'
+    PasswordResetRequired:
+      type: object
+      additionalProperties: false
+      required: [step, passwordReset]
+      properties:
+        step: {type: string, enum: [PASSWORD_RESET_REQUIRED]}
+        passwordReset:
+          $ref: '#/components/schemas/PasswordResetGrant'
+    PasswordUpdated:
+      type: object
+      additionalProperties: false
       required: [step]
       properties:
-        step:
-          type: string
-          enum: [SUCCESS, 2FA-EMAIL, 2FA-PHONE]
-        access_token:
-          type: string
-          nullable: true
-        refresh_token:
-          type: string
-          format: uuid
-          nullable: true
-        mfa_token:
-          type: string
-          nullable: true
-
-    MfaTokenData:
+        step: {type: string, enum: [PASSWORD_UPDATED_LOGIN_REQUIRED]}
+    SuccessEnvelope:
       type: object
-      required: [mfa_token]
+      additionalProperties: false
+      required: [success, message, messageFa, data, timestamp]
       properties:
-        mfa_token:
-          type: string
-
-    TempTokenData:
-      type: object
-      required: [temp_token]
-      properties:
-        temp_token:
-          type: string
-
-    TokenPairData:
-      type: object
-      required: [access_token, refresh_token]
-      properties:
-        access_token:
-          type: string
-        refresh_token:
-          type: string
-          format: uuid
-
-    LockDurationData:
-      type: object
-      required: [retry_after_seconds, locked_until]
-      properties:
-        retry_after_seconds:
-          type: integer
-          description: Remaining lock duration in seconds
-        locked_until:
-          type: string
-          format: date-time
-          description: Exact UTC timestamp when the lock expires
-
-    ValidationErrorItem:
-      type: object
-      required: [field, code, message, message_fa]
-      properties:
-        field:
-          type: string
-        code:
-          type: string
-        message:
-          type: string
-        message_fa:
-          type: string
-
-    # ------------------------------------
-    #          Response Envelopes
-    # ------------------------------------
-    BaseResponse:
-      type: object
-      required: [success, code, message, message_fa, timestamp]
-      properties:
-        success:
-          type: boolean
-        code:
-          type: string
-          description: Machine-readable status or error code
-        message:
-          type: string
-        message_fa:
-          type: string
+        success: {type: boolean, enum: [true]}
+        message: {type: string}
+        messageFa: {type: string}
+        data: {}
         timestamp:
           type: string
           format: date-time
-
-    EmptyResponse:
+          description: UTC timestamp generated when Auth builds the response.
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [success, code, message, messageFa, data, timestamp]
+      properties:
+        success: {type: boolean, enum: [false]}
+        code: {type: string}
+        message: {type: string}
+        messageFa: {type: string}
+        data: {}
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp generated when Auth builds the response.
+    NullData:
+      type: object
+      nullable: true
+      enum:
+        - null
+    ValidationData:
+      oneOf:
+        - $ref: '#/components/schemas/NullData'
+        - $ref: '#/components/schemas/FieldValidationData'
+    FieldValidationData:
+      type: object
+      additionalProperties: false
+      required: [errors]
+      properties:
+        errors:
+          type: object
+          additionalProperties: {type: string}
+          description: Map from Java DTO field names to validation messages.
+    RetryData:
+      type: object
+      additionalProperties: false
+      required: [retryAfterSeconds]
+      properties:
+        retryAfterSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+    EmailOtpRequiredResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              type: object
-              nullable: true
-
-    LoginResponse:
+              $ref: '#/components/schemas/EmailOtpRequired'
+    SmsOtpRequiredResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/LoginData'
-
-    MfaTokenResponse:
+              $ref: '#/components/schemas/SmsOtpRequired'
+    ContactOtpChallengeResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/MfaTokenData'
-
-    TempTokenResponse:
+              $ref: '#/components/schemas/ContactOtpChallenge'
+    RegistrationGrantResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/TempTokenData'
-
+              $ref: '#/components/schemas/RegistrationGrant'
+    RegisteredAccountResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RegisteredAccount'
     TokenPairResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/TokenPairData'
-
-    LockErrorResponse:
+              $ref: '#/components/schemas/TokenPair'
+    EmptyResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              $ref: '#/components/schemas/LockDurationData'
-
-    ValidationErrorResponse:
+              $ref: '#/components/schemas/NullData'
+    PasswordChangeRequiredResponse:
       allOf:
-        - $ref: '#/components/schemas/BaseResponse'
+        - $ref: '#/components/schemas/SuccessEnvelope'
         - type: object
           properties:
             data:
-              type: array
-              items:
-                $ref: '#/components/schemas/ValidationErrorItem'
+              $ref: '#/components/schemas/PasswordChangeRequired'
+    PasswordUpdatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PasswordUpdated'
+    ContactOtpRequiredResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ContactOtpRequired'
+    AuthSettingsResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessEnvelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AuthSettings'
