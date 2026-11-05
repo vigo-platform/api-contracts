@@ -1,0 +1,17 @@
+{
+  "event_id": "1949b943-e3d8-4af5-9f39-07b890b91aaa",
+  "event_type": "NotificationRequested",
+  "event_version": 1,
+  "occurred_at": "2026-01-01T12:00:00Z",
+  "producer": "auth-service",
+  "correlation_id": "cebc9fe4-8b76-4bba-9cf5-c6319d3dbbbb",
+  "data": {
+    "channel": "EMAIL",
+    "purpose": "REGISTRATION_OTP",
+    "locale": "fa",
+    "recipient": {"destination": "recipient@example.invalid"},
+    "template_id": "auth.registration_otp.email.v1",
+    "template_parameters": {"otp_code": "012345"},
+    "expires_at": "2026-01-01T12:03:00Z"
+  }
+}
