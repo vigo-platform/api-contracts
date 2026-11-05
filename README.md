@@ -1,6 +1,8 @@
 # api-contracts
 
-API contracts for gRPC and REST services.
+API contracts in three distinct categories: REST (`rest/`), gRPC (`grpc/`),
+and messaging (`messaging/`). Notification command contracts live under
+[`messaging/notification/`](messaging/notification/README.md).
 
 ---
 

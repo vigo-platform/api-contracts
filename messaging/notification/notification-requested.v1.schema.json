@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NotificationRequested v1",
+  "description": "Asynchronous delivery command on notification.commands, keyed by event_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "event_type", "event_version", "occurred_at", "producer", "correlation_id", "data"],
+  "properties": {
+    "event_id": {"$ref": "#/$defs/uuid"},
+    "event_type": {"const": "NotificationRequested"},
+    "event_version": {"type": "integer", "const": 1},
+    "occurred_at": {"$ref": "#/$defs/utcTimestamp"},
+    "producer": {"const": "auth-service"},
+    "correlation_id": {"$ref": "#/$defs/uuid"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "purpose", "locale", "recipient", "template_id", "template_parameters", "expires_at"],
+      "properties": {
+        "channel": {"const": "EMAIL"},
+        "purpose": {"enum": ["LOGIN_OTP", "REGISTRATION_OTP", "PASSWORD_CHANGE_OTP", "PASSWORD_RESET_OTP"]},
+        "locale": {"enum": ["fa", "en"]},
+        "recipient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["destination"],
+          "properties": {
+            "destination": {
+              "type": "string",
+              "format": "email",
+              "maxLength": 254,
+              "pattern": "^(?=.{1,64}@)[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$(?![\\s\\S])",
+              "description": "V1 MVP/application constraint: one conventional ASCII address with a dot-atom local part and DNS-style domain. No display names, lists, IP literals, SMTPUTF8, quoted or obsolete RFC mailbox forms."
+            }
+          }
+        },
+        "template_id": {"enum": ["auth.login_otp.email.v1", "auth.registration_otp.email.v1", "auth.password_change_otp.email.v1", "auth.password_reset_otp.email.v1"]},
+        "template_parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otp_code"],
+          "properties": {
+            "otp_code": {"type": "string", "minLength": 6, "maxLength": 6, "pattern": "^[0-9]{6}$"}
+          }
+        },
+        "expires_at": {"$ref": "#/$defs/utcTimestamp"}
+      },
+      "oneOf": [
+        {"properties": {"purpose": {"const": "LOGIN_OTP"}, "template_id": {"const": "auth.login_otp.email.v1"}}},
+        {"properties": {"purpose": {"const": "REGISTRATION_OTP"}, "template_id": {"const": "auth.registration_otp.email.v1"}}},
+        {"properties": {"purpose": {"const": "PASSWORD_CHANGE_OTP"}, "template_id": {"const": "auth.password_change_otp.email.v1"}}},
+        {"properties": {"purpose": {"const": "PASSWORD_RESET_OTP"}, "template_id": {"const": "auth.password_reset_otp.email.v1"}}}
+      ]
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-5][0-9](\\.[0-9]+)?([Zz]|\\+00:00)$(?![\\s\\S])"
+    }
+  }
+}
