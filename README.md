@@ -3,6 +3,8 @@
 API contracts in three distinct categories: REST (`rest/`), gRPC (`grpc/`),
 and messaging (`messaging/`). Notification command contracts live under
 [`messaging/notification/`](messaging/notification/README.md).
+The separate [NotificationRequested v2 proposal](messaging/notification/README.v2.md)
+adds EMAIL/IN_APP delivery contracts while preserving approved v1 unchanged.
 
 ---
 

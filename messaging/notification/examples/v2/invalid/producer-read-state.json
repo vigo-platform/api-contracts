@@ -1,0 +1,29 @@
+{
+  "event_id": "4a86376e-d876-45cf-9b19-9a204f151e51",
+  "event_type": "NotificationRequested",
+  "event_version": 2,
+  "occurred_at": "2026-11-18T08:00:00Z",
+  "producer": "user-service",
+  "correlation_id": "39c08cbe-74b4-4adc-a120-09a840a76662",
+  "data": {
+    "locale": "fa",
+    "template_id": "notification.coach_application.approved.v1",
+    "template_parameters": {},
+    "expires_at": "2026-11-19T08:00:00Z",
+    "deliveries": [
+      {
+        "channel": "EMAIL",
+        "recipient": {
+          "destination": "coach@example.invalid"
+        }
+      },
+      {
+        "channel": "IN_APP",
+        "recipient": {
+          "user_id": "12345"
+        },
+        "read": true
+      }
+    ]
+  }
+}
