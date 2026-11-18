@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Vigo – User Service
-  version: 1.2.0
+  version: 1.3.0
   description: |
     User profiles, coach marketplace profiles, coach plans, coach–athlete relations, and admin coach vetting.
 
@@ -49,6 +49,7 @@ tags:
   - name: Plans
   - name: Relations
   - name: Admin
+  - name: Plans (catalogue)
   - name: Coach applications (public)
   - name: Coach applications (admin)
   - name: Internal
@@ -212,6 +213,88 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CoachProfileResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ---- Plan catalogue (public) and purchase (athlete) --------------------
+  /api/v1/plans:
+    get:
+      tags: [Plans (catalogue)]
+      summary: Browse active plans of approved coaches (public)
+      operationId: listPlans
+      security: []
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: coach_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/plans/{plan_id}:
+    get:
+      tags: [Plans (catalogue)]
+      summary: Plan details (public, active plans only)
+      operationId: getPlan
+      security: []
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/plans/{plan_id}/purchase:
+    post:
+      tags: [Plans (catalogue)]
+      summary: Request an order for a plan (ATHLETE)
+      description: |
+        Creates a PENDING_PAYMENT subscription and asks the Order service to create
+        the order. The request carries no price: **a client-supplied price is never
+        accepted**, and the Order service owns the authoritative price snapshot.
+        Access is activated only by a payment-success event. When Order is
+        unavailable the response is `503 ORDER_UNAVAILABLE` and no subscription is kept.
+      operationId: purchasePlan
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/PlanId' }]
+      responses:
+        '202':
+          description: Order requested; payment pending
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanPurchaseResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: Order service unavailable or purchases disabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/v1/plans/subscriptions/me:
+    get:
+      tags: [Plans (catalogue)]
+      summary: My plan subscriptions (ATHLETE)
+      operationId: listMySubscriptions
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubscriptionListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   /api/v1/coaches/{coach_id}/plans:
@@ -856,13 +939,90 @@ components:
       description: WORKOUT, DIET and SUPPLEMENT use the same words as the Storage `FileCategory`.
       enum: [WORKOUT, DIET, SUPPLEMENT, CHAT_SUPPORT]
 
+    PlanInclude: { type: string, enum: [WORKOUT, NUTRITION, SUPPLEMENT, CHAT_SUPPORT] }
+
+    CoachPlan:
+      type: object
+      required: [plan_id, coach_id, title, price, duration_days, includes, status]
+      properties:
+        plan_id: { type: string, format: uuid }
+        coach_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        price: { type: integer, format: int64 }
+        currency: { type: string, enum: [IRR] }
+        duration_days: { type: integer }
+        includes: { type: array, items: { $ref: '#/components/schemas/PlanInclude' } }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PlanPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content: { type: array, items: { $ref: '#/components/schemas/CoachPlan' } }
+
+    PlanPurchase:
+      type: object
+      required: [subscription_id, order_id, plan_id, status, payment_required]
+      properties:
+        subscription_id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING_PAYMENT] }
+        amount_due:
+          type: integer
+          format: int64
+          nullable: true
+          description: Always null here; the authoritative amount is reported by Order.
+        payment_required: { type: boolean }
+
+    Subscription:
+      type: object
+      required: [subscription_id, plan_id, coach_id, status]
+      properties:
+        subscription_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        coach_id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid, nullable: true }
+        status: { type: string, enum: [PENDING_PAYMENT, ACTIVE, EXPIRED, CANCELLED] }
+        starts_at: { type: string, format: date-time, nullable: true }
+        ends_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    PlanPageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlanPage' }
+    PlanPurchaseResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/PlanPurchase' }
+    SubscriptionListResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/Subscription' } }
+
     CoachApplicationRequest:
       type: object
       additionalProperties: false
-      required: [full_name, email, bio, specialties, experience_years]
+      required: [first_name, last_name, email, bio, specialties, experience_years]
       properties:
-        full_name: { type: string, minLength: 2, maxLength: 60, description: Also used as the public coach display name. }
-        email: { type: string, format: email, maxLength: 254, description: The invitation is bound to this address; it must be the address used to register. }
+        first_name: { type: string, minLength: 1, maxLength: 60 }
+        last_name: { type: string, minLength: 1, maxLength: 60 }
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: The invitation is bound to this address; register with exactly this email.
         phone: { type: string, nullable: true, pattern: '^\+[1-9][0-9]{7,14}$', description: Optional E.164 contact number. }
         headline: { type: string, nullable: true, maxLength: 120 }
         bio: { type: string, minLength: 20, maxLength: 3000 }
@@ -872,19 +1032,49 @@ components:
           maxItems: 10
           items: { type: string, maxLength: 40 }
         experience_years: { type: integer, minimum: 0, maximum: 60 }
-        certifications:
+        profile_image_file_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Storage asset id of a PUBLIC profile image. Binary content never enters this service.
+        certificates:
           type: array
-          maxItems: 20
-          items:
-            type: object
-            required: [title]
-            additionalProperties: false
-            properties:
-              title: { type: string, maxLength: 100 }
-              issuer: { type: string, maxLength: 100 }
-              year: { type: integer, minimum: 1950, maximum: 2100 }
+          maxItems: 10
+          description: Each certificate references a PRIVATE Storage asset; storage keeps the bytes.
+          items: { $ref: '#/components/schemas/CoachApplicationCertificate' }
+        experiences:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/CoachApplicationExperience' }
         instagram_handle: { type: string, nullable: true, pattern: '^[A-Za-z0-9._]{1,30}$' }
-        locale: { type: string, enum: [fa, en], default: fa, description: Preferred language for future notifications. }
+        locale: { type: string, enum: [fa, en], default: fa }
+
+    CoachApplicationCertificate:
+      type: object
+      additionalProperties: false
+      required: [category, title, file_id]
+      description: |
+        Fields are category-specific and must stay null where they do not apply:
+        UNIVERSITY uses issuer (university), field_of_study and degree;
+        FEDERATION uses issuer (federation); SKILL uses issuer (training centre).
+        Sending field_of_study or degree for a non-university category is rejected.
+      properties:
+        category: { type: string, enum: [UNIVERSITY, FEDERATION, SKILL] }
+        title: { type: string, maxLength: 150 }
+        issuer: { type: string, maxLength: 150, nullable: true }
+        field_of_study: { type: string, maxLength: 150, nullable: true }
+        degree: { type: string, maxLength: 100, nullable: true }
+        file_id: { type: string, format: uuid, description: Storage asset id of the scanned document (PRIVATE). }
+
+    CoachApplicationExperience:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: { type: string, maxLength: 150 }
+        organization: { type: string, maxLength: 150, nullable: true }
+        description: { type: string, maxLength: 1000, nullable: true }
+        duration_months: { type: integer, minimum: 0, maximum: 720, nullable: true }
 
     CoachApplicationSummary:
       type: object
@@ -916,6 +1106,15 @@ components:
       properties:
         application_id: { type: string, format: uuid }
         full_name: { type: string }
+        first_name: { type: string }
+        last_name: { type: string }
+        profile_image_file_id: { type: string, format: uuid, nullable: true, description: Public profile image asset. }
+        certificates:
+          type: array
+          items: { $ref: '#/components/schemas/CoachApplicationCertificate' }
+        experiences:
+          type: array
+          items: { $ref: '#/components/schemas/CoachApplicationExperience' }
         email: { type: string, format: email }
         phone: { type: string, nullable: true }
         headline: { type: string, nullable: true }
@@ -1176,7 +1375,7 @@ components:
         - $ref: '#/components/schemas/BaseResponse'
         - type: object
           properties:
-            data: { $ref: '#/components/schemas/Plan' }
+            data: { $ref: '#/components/schemas/CoachPlan' }
 
     PlanListResponse:
       allOf:
