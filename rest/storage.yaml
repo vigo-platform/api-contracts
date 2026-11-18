@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Vigo – Storage Service
-  version: 1.1.0
+  version: 1.2.0
   description: |
     Program files (workout / diet / supplement) uploaded by a coach for a specific athlete, with versioning,
     and public images (avatars, coach result photos) used by the User service.
@@ -53,6 +53,7 @@ servers:
 tags:
   - name: Files
   - name: Versions
+  - name: Assets
   - name: Media
 
 paths:
@@ -250,6 +251,212 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  # ---- Generic assets: public images and private documents ----------------
+  /api/v1/assets/public:
+    post:
+      tags: [Assets]
+      summary: Upload a PUBLIC asset (profile image)
+      description: |
+        The route decides visibility; a client cannot choose it. Only an ACTIVE
+        asset of a public kind is readable without authentication. Images and PDFs
+        are validated from their actual bytes, not their declared type.
+      operationId: uploadPublicAsset
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/assets/private:
+    post:
+      tags: [Assets]
+      summary: Upload a PRIVATE asset (certificate, document)
+      description: Never publicly readable; delivered only through a temporary URL.
+      operationId: uploadPrivateAsset
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/assets/{asset_id}:
+    get:
+      tags: [Assets]
+      summary: Asset metadata (owner, admin, granted user, or public asset)
+      operationId: getAsset
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      tags: [Assets]
+      summary: Delete an asset (owner or admin)
+      description: Metadata is marked DELETED and the object is removed from storage.
+      operationId: deleteAsset
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmptyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/assets/{asset_id}/download-url:
+    get:
+      tags: [Assets]
+      summary: Temporary download URL for an authorized caller
+      description: |
+        Authorization is checked before any URL exists. With the S3 backend the URL
+        is a presigned link whose lifetime is `STORAGE_PRESIGN_TTL` (default 10
+        minutes, maximum 60). With the filesystem backend `mode` is `STREAM` and the
+        client uses `/content`, which performs the same check. A private asset never
+        receives a permanent URL.
+      operationId: createAssetDownloadUrl
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetDownloadUrlResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/assets/{asset_id}/content:
+    get:
+      tags: [Assets]
+      summary: Asset bytes
+      description: |
+        Anonymous for PUBLIC assets only. PRIVATE assets answer 404 to anonymous
+        callers, so this route cannot be used to probe private documents.
+      operationId: getAssetContent
+      security: []
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      responses:
+        '200':
+          description: Binary stream
+          headers:
+            Content-Disposition: { schema: { type: string } }
+            X-Content-Type-Options: { schema: { type: string, example: nosniff } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/assets/{asset_id}/access:
+    get:
+      tags: [Assets]
+      summary: List explicit access grants (owner or admin)
+      operationId: listAssetAccess
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetAccessListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Assets]
+      summary: Grant a user access (owner or admin)
+      operationId: grantAssetAccess
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/AssetId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+                permission: { type: string, enum: [READ, READ_WRITE], default: READ }
+      responses:
+        '200':
+          description: Granted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetGrantResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/assets/{asset_id}/access/{user_id}:
+    delete:
+      tags: [Assets]
+      summary: Revoke a user's access (owner or admin)
+      operationId: revokeAssetAccess
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AssetId' }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmptyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /api/v1/media/images:
     post:
       tags: [Media]
@@ -333,6 +540,7 @@ components:
       required: true
       description: Injected by the Gateway from the JWT `role` claim. Never sent by clients.
       schema: { $ref: '#/components/schemas/Role' }
+    AssetId: { name: asset_id, in: path, required: true, schema: { type: string, format: uuid } }
     FileId: { name: file_id, in: path, required: true, schema: { type: string, format: uuid } }
     MediaId: { name: media_id, in: path, required: true, schema: { type: string, format: uuid } }
     Page:
@@ -387,6 +595,72 @@ components:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   schemas:
+    Asset:
+      type: object
+      required: [asset_id, owner_user_id, original_filename, content_type, size_bytes, visibility, status]
+      properties:
+        asset_id: { type: string, format: uuid }
+        owner_user_id: { type: string, format: uuid }
+        original_filename: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        visibility: { type: string, enum: [PUBLIC, PRIVATE] }
+        status: { type: string, enum: [ACTIVE, DELETED] }
+        public_url:
+          type: string
+          nullable: true
+          description: Present for ACTIVE public assets only; the bytes are still served by Storage.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AssetDownloadUrl:
+      type: object
+      required: [url, mode, expires_at]
+      properties:
+        url: { type: string }
+        mode: { type: string, enum: [PRESIGNED, STREAM] }
+        expires_at: { type: string, format: date-time }
+
+    AssetAccessEntry:
+      type: object
+      required: [user_id, permission, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        permission: { type: string, enum: [READ, READ_WRITE] }
+        created_at: { type: string, format: date-time }
+
+    AssetGrant:
+      type: object
+      properties:
+        asset_id: { type: string, format: uuid }
+        granted: { type: string, format: uuid }
+        permission: { type: string, enum: [READ, READ_WRITE] }
+
+    AssetResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Asset' }
+    AssetDownloadUrlResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AssetDownloadUrl' }
+    AssetAccessListResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { type: array, items: { $ref: '#/components/schemas/AssetAccessEntry' } }
+    AssetGrantResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/AssetGrant' }
+
     FieldIssue:
       type: object
       required: [field, code, message, message_fa]
