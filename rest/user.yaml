@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Vigo – User Service
-  version: 1.1.0
+  version: 1.2.0
   description: |
     User profiles, coach marketplace profiles, coach plans, coach–athlete relations, and admin coach vetting.
 
@@ -49,6 +49,8 @@ tags:
   - name: Plans
   - name: Relations
   - name: Admin
+  - name: Coach applications (public)
+  - name: Coach applications (admin)
   - name: Internal
 
 paths:
@@ -528,6 +530,159 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  # ---- Anonymous coach applications -------------------------------------
+  # A visitor applies without registering. Submission creates no account and
+  # grants no role; only a later registration proving the invited email can
+  # become a COACH. These routes take no identity headers.
+  /api/v1/coaches/applications:
+    post:
+      tags: [Coach applications (public)]
+      summary: Submit a coach application without authentication
+      description: |
+        Creates a PENDING application. No user account is created and no role is
+        granted. The response is identical whether the email is new or already has
+        a pending application, so callers cannot use it to discover existing
+        applications. `lookup_token` is returned once so the applicant can check
+        status; store it securely. Rate limited per client address.
+      operationId: submitCoachApplication
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CoachApplicationRequest' }
+      responses:
+        '201':
+          description: Accepted for review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationSummaryResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/coaches/applications/{lookup_token}:
+    get:
+      tags: [Coach applications (public)]
+      summary: Check an application status with its opaque token
+      description: Returns status only; never name, email, phone or review notes.
+      operationId: getCoachApplicationStatus
+      security: []
+      parameters:
+        - name: lookup_token
+          in: path
+          required: true
+          schema: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationStatusResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ---- Admin review of anonymous applications ---------------------------
+  /api/v1/admin/coaches/applications:
+    get:
+      tags: [Coach applications (admin)]
+      summary: List anonymous coach applications (ADMIN)
+      operationId: adminListCoachApplications
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/Size' }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/CoachStatus' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationPageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/applications/{application_id}:
+    get:
+      tags: [Coach applications (admin)]
+      summary: One anonymous coach application (ADMIN)
+      operationId: adminGetCoachApplication
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ApplicationId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/applications/{application_id}/approve:
+    post:
+      tags: [Coach applications (admin)]
+      summary: Approve an application and issue a registration invitation (ADMIN)
+      description: |
+        Allowed only from PENDING (`409 INVALID_STATE` otherwise). Issues a
+        single-use, time-limited invitation bound to the applicant email and
+        publishes `CoachApplicationApproved`. No account is created and no role
+        is granted here. An address that already has an account returns
+        `409 EMAIL_ALREADY_REGISTERED`.
+      operationId: adminApproveCoachApplication
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ApplicationId' }
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api/v1/admin/coaches/applications/{application_id}/reject:
+    post:
+      tags: [Coach applications (admin)]
+      summary: Reject an application (ADMIN)
+      description: |
+        Allowed only from PENDING (`409 INVALID_STATE` otherwise). Publishes
+        `CoachApplicationRejected`. A rejected application never receives an
+        invitation, so the email can never gain COACH through it.
+      operationId: adminRejectCoachApplication
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ApplicationId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoachApplicationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /internal/v1/plans/{plan_id}:
     get:
       tags: [Internal]
@@ -561,7 +716,19 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token issued by Auth. `sub` is the public UUID; `role` drives authorization.
   parameters:
+    ApplicationId:
+      name: application_id
+      in: path
+      required: true
+      description: Public UUID of an anonymous coach application.
+      schema: { type: string, format: uuid }
     UserIdHeader:
       name: X-User-Id
       in: header
@@ -613,6 +780,11 @@ components:
         On `PROFILE_NOT_READY` retry after the `Retry-After` delay.
       headers:
         Retry-After: { schema: { type: integer, example: 2 } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TooManyRequests:
+      description: Too many anonymous submissions from this client (HTTP 429)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -683,6 +855,124 @@ components:
       type: string
       description: WORKOUT, DIET and SUPPLEMENT use the same words as the Storage `FileCategory`.
       enum: [WORKOUT, DIET, SUPPLEMENT, CHAT_SUPPORT]
+
+    CoachApplicationRequest:
+      type: object
+      additionalProperties: false
+      required: [full_name, email, bio, specialties, experience_years]
+      properties:
+        full_name: { type: string, minLength: 2, maxLength: 60, description: Also used as the public coach display name. }
+        email: { type: string, format: email, maxLength: 254, description: The invitation is bound to this address; it must be the address used to register. }
+        phone: { type: string, nullable: true, pattern: '^\+[1-9][0-9]{7,14}$', description: Optional E.164 contact number. }
+        headline: { type: string, nullable: true, maxLength: 120 }
+        bio: { type: string, minLength: 20, maxLength: 3000 }
+        specialties:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { type: string, maxLength: 40 }
+        experience_years: { type: integer, minimum: 0, maximum: 60 }
+        certifications:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [title]
+            additionalProperties: false
+            properties:
+              title: { type: string, maxLength: 100 }
+              issuer: { type: string, maxLength: 100 }
+              year: { type: integer, minimum: 1950, maximum: 2100 }
+        instagram_handle: { type: string, nullable: true, pattern: '^[A-Za-z0-9._]{1,30}$' }
+        locale: { type: string, enum: [fa, en], default: fa, description: Preferred language for future notifications. }
+
+    CoachApplicationSummary:
+      type: object
+      description: Returned to an anonymous applicant. No personal data beyond what was submitted.
+      required: [application_id, status, submitted_at]
+      properties:
+        application_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/CoachStatus' }
+        lookup_token:
+          type: string
+          nullable: true
+          description: Opaque status token, returned only in the submission response. Store it securely; it is never re-issued by an admin route.
+          example: 3fP0rQ9k8m2sVwX1yZ4aB6cD8eF0gH2iJ4kL6mN8oP0
+        submitted_at: { type: string, format: date-time }
+
+    CoachApplicationStatusView:
+      type: object
+      description: Minimal status view; deliberately excludes all applicant data.
+      required: [application_id, status, submitted_at]
+      properties:
+        application_id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/CoachStatus' }
+        submitted_at: { type: string, format: date-time }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+
+    CoachApplication:
+      type: object
+      required: [application_id, full_name, email, bio, specialties, experience_years, status, created_at]
+      properties:
+        application_id: { type: string, format: uuid }
+        full_name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        headline: { type: string, nullable: true }
+        bio: { type: string }
+        specialties: { type: array, items: { type: string } }
+        experience_years: { type: integer }
+        certifications: { type: array, items: { type: object } }
+        instagram_handle: { type: string, nullable: true }
+        locale: { type: string, enum: [fa, en] }
+        status: { $ref: '#/components/schemas/CoachStatus' }
+        rejection_reason: { type: string, nullable: true }
+        reviewed_by: { type: string, format: uuid, nullable: true }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        invitation_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Present after approval. The invitation is single-use and bound to `email`.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CoachApplicationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          properties:
+            content:
+              type: array
+              items: { $ref: '#/components/schemas/CoachApplication' }
+
+    CoachApplicationSummaryResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachApplicationSummary' }
+
+    CoachApplicationStatusResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachApplicationStatusView' }
+
+    CoachApplicationResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachApplication' }
+
+    CoachApplicationPageResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/CoachApplicationPage' }
 
     UserProfile:
       type: object
